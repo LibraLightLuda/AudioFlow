@@ -3,10 +3,9 @@ package app.audioflow
 import java.io.IOException
 import java.net.URI
 import java.net.URLDecoder
-import javax.net.ssl.HttpsURLConnection
 import androidx.room.ColumnInfo
-import java.io.ByteArrayOutputStream
 import java.util.Locale
+import okhttp3.RequestBody.Companion.toRequestBody
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -145,33 +144,14 @@ object YoutubeCatalog : Catalog {
     init {
         NewPipe.init(object : Downloader() {
             override fun execute(request: Request): Response {
-                val url = URI(request.url()).toURL()
-                val connection = url.openConnection() as? HttpsURLConnection
-                    ?: throw IOException("HTTPS required")
-                try {
-                    connection.connectTimeout = 9_000
-                    connection.readTimeout = 12_000
-                    connection.requestMethod = request.httpMethod()
-                    connection.setRequestProperty("User-Agent", BROWSER_AGENT)
-                    request.headers().forEach { (name, values) ->
-                        if (!name.equals("Authorization", true)) {
-                            values.firstOrNull()?.let { connection.setRequestProperty(name, it) }
-                            values.drop(1).forEach { connection.addRequestProperty(name, it) }
-                        }
-                    }
-                    request.dataToSend()?.let { bytes ->
-                        connection.doOutput = true
-                        connection.setFixedLengthStreamingMode(bytes.size)
-                        connection.outputStream.use { it.write(bytes) }
-                    }
-                    val code = connection.responseCode
+                val builder = okhttp3.Request.Builder().url(request.url())
+                    .method(request.httpMethod(), request.dataToSend()?.toRequestBody())
+                request.headers().forEach { (name, values) -> values.forEach { builder.addHeader(name, it) } }
+                PrivateNetwork.catalog.newCall(builder.build()).execute().use { connection ->
+                    val code = connection.code
                     if (code == 403 || code == 429) throw CatalogHttpException(code)
-                    val body = (if (code >= 400) connection.errorStream else connection.inputStream)
-                        ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
-                    return Response(code, connection.responseMessage.orEmpty(),
-                        connection.headerFields.filterKeys { it != null }, body, connection.url.toString())
-                } finally {
-                    connection.disconnect()
+                    val body = connection.body?.byteStream()?.use { it.readLimited(16 * 1024 * 1024).toString(Charsets.UTF_8) }
+                    return Response(code, connection.message, connection.headers.toMultimap(), body, connection.request.url.toString())
                 }
             }
         })
@@ -304,29 +284,11 @@ object YoutubeCatalog : Catalog {
         if (uri.scheme != "https" || uri.host !in setOf("www.youtube.com", "youtube.com", "video.google.com")) {
             throw CatalogException("지원되는 공개 자막 주소를 찾지 못했어요.")
         }
-        val connection = uri.toURL().openConnection() as HttpsURLConnection
-        try {
-            connection.connectTimeout = 9_000
-            connection.readTimeout = 12_000
-            connection.instanceFollowRedirects = false
-            connection.setRequestProperty("User-Agent", BROWSER_AGENT)
-            val status = connection.responseCode
+        PrivateNetwork.catalog.newCall(okhttp3.Request.Builder().url(uri.toString()).build()).execute().use { connection ->
+            val status = connection.code
             if (status != 200) throw CatalogHttpException(status)
-            val bytes = connection.inputStream.use { input ->
-                val output = ByteArrayOutputStream()
-                val buffer = ByteArray(8192)
-                while (true) {
-                    currentCoroutineContext().ensureActive()
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    if (output.size() + count > 512 * 1024) throw CatalogException("자막 파일이 너무 커요.")
-                    output.write(buffer, 0, count)
-                }
-                output.toByteArray()
-            }
+            val bytes = connection.body?.byteStream()?.use { it.readLimited(512 * 1024) } ?: return@withContext null
             if (bytes.isEmpty()) null else Captions(caption.displayLanguageName, bytes)
-        } finally {
-            connection.disconnect()
         }
     }
 
@@ -359,8 +321,7 @@ object YoutubeCatalog : Catalog {
 
     private fun Stream.isProgressive(): Boolean {
         if (!isUrl || deliveryMethod != DeliveryMethod.PROGRESSIVE_HTTP) return false
-        val uri = runCatching { URI(content) }.getOrNull() ?: return false
-        return uri.scheme == "https" && uri.host?.endsWith(".googlevideo.com") == true
+        return PrivateNetwork.permits(content, NetworkPurpose.Stream)
     }
 }
 

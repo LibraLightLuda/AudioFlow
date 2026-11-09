@@ -11,8 +11,9 @@ import android.util.Log
 import androidx.media3.common.*
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSourceBitmapLoader
 import androidx.media3.datasource.DataSpec
-import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.cache.CacheDataSink
@@ -25,6 +26,7 @@ import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.session.MediaSession
+import androidx.media3.session.CacheBitmapLoader
 import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
@@ -46,10 +48,15 @@ private const val CHANNEL_URL = "app.audioflow.channelUrl"
 internal const val STREAM_CACHE_BYTES = 24L * 1024 * 1024
 internal const val STREAM_BUFFER_TARGET_BYTES = 8 * 1024 * 1024
 
+internal fun privateArtworkLoader(context: android.content.Context) = CacheBitmapLoader(
+    DataSourceBitmapLoader.Builder(context).setDataSourceFactory(OkHttpDataSource.Factory(PrivateNetwork.images))
+        .setMaximumOutputDimension(512).build(),
+)
+
 internal fun Track.mediaItem(): MediaItem = MediaItem.Builder().setMediaId(id)
     .setUri("audioflow://video/$id")
     .setMediaMetadata(MediaMetadata.Builder().setTitle(title).setArtist(channel)
-        .setArtworkUri(thumbnail.takeIf { it.startsWith("https://") }?.let(Uri::parse))
+        .setArtworkUri(PrivateNetwork.imageUrl(thumbnail)?.let(Uri::parse))
         .setDurationMs((seconds * 1000).takeIf { it > 0 })
         .setExtras(Bundle().apply { putString(CHANNEL_URL, channelUrl) })
         .setIsPlayable(true).build())
@@ -76,12 +83,11 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
-        val http = DefaultHttpDataSource.Factory().setUserAgent(BROWSER_AGENT)
-            .setConnectTimeoutMs(9_000).setReadTimeoutMs(12_000)
+        val http = OkHttpDataSource.Factory(PrivateNetwork.stream).setUserAgent(BROWSER_AGENT)
         streamCache = runCatching {
             SimpleCache(File(cacheDir, "stream-v1"), LeastRecentlyUsedCacheEvictor(STREAM_CACHE_BYTES),
                 StandaloneDatabaseProvider(this))
-        }.onFailure { Log.w("AudioFlow", "Stream cache unavailable", it) }.getOrNull()
+        }.onFailure { Log.w("AudioFlow", "Stream cache unavailable") }.getOrNull()
         val upstream = streamCache?.let { cache ->
             CacheDataSource.Factory().setCache(cache)
                 .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
@@ -157,7 +163,8 @@ class PlaybackService : MediaSessionService() {
         player.addListener(listener)
         val openApp = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        session = MediaSession.Builder(this, player).setSessionActivity(openApp).setCallback(callback).build()
+        session = MediaSession.Builder(this, player).setBitmapLoader(privateArtworkLoader(this))
+            .setSessionActivity(openApp).setCallback(callback).build()
 
         scope.launch {
             val queue = app.store.readQueue()
@@ -312,7 +319,7 @@ class PlaybackService : MediaSessionService() {
                 if (started) dao.played(track, position)
                 else dao.checkpointPosition(track.id, position.coerceAtLeast(0))
             }
-                .onFailure { Log.w("AudioFlow", "Could not save playback history", it) }
+                .onFailure { Log.w("AudioFlow", "Could not save playback history") }
         }
     }
 
@@ -327,7 +334,7 @@ class PlaybackService : MediaSessionService() {
         )
         app.scope.launch {
             runCatching { app.store.saveQueue(state) }
-                .onFailure { Log.w("AudioFlow", "Could not save playback queue", it) }
+                .onFailure { Log.w("AudioFlow", "Could not save playback queue") }
         }
     }
 

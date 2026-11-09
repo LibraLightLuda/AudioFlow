@@ -1,13 +1,47 @@
 package app.audioflow
 
-import java.net.HttpURLConnection
-import java.net.URI
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 class CatalogTest {
+    @Test fun livePrivateRequestsIgnoreGlobalCookies() {
+        assumeTrue(System.getenv("AUDIOFLOW_LIVE") == "1")
+        val previous = java.net.CookieHandler.getDefault()
+        val cookies = java.net.CookieManager(null, java.net.CookiePolicy.ACCEPT_ALL)
+        try {
+            java.net.CookieHandler.setDefault(cookies)
+            listOf(
+                PrivateNetwork.catalog to "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+                PrivateNetwork.images to "https://i.ytimg.com/vi/jNQXAC9IVRw/default.jpg",
+            ).forEach { (client, url) ->
+                val uri = java.net.URI(url)
+                cookies.put(uri, mapOf("Set-Cookie" to listOf("SID=synthetic-test-only; Path=/; Secure")))
+                assertTrue(cookies.get(uri, emptyMap()).values.flatten().any { it.contains("synthetic-test-only") })
+                var observed = false
+                val checkedClient = client.newBuilder().addNetworkInterceptor { chain ->
+                    observed = true
+                    listOf("Cookie", "Authorization", "Proxy-Authorization", "X-Goog-AuthUser").forEach {
+                        assertNull(it, chain.request().header(it))
+                    }
+                    chain.proceed(chain.request())
+                }.build()
+                checkedClient.newCall(okhttp3.Request.Builder().url(url)
+                    .header("Cookie", "SID=synthetic-test-only").header("Authorization", "Bearer synthetic-test-only")
+                    .build()).execute().use { response ->
+                    assertEquals(200, response.code)
+                    assertNull(response.header("Set-Cookie"))
+                    assertTrue(checkNotNull(response.body).byteStream().read() >= 0)
+                }
+                assertTrue(observed)
+            }
+            println("catalog and image requests: no global cookies or authorization at network interceptor")
+        } finally {
+            java.net.CookieHandler.setDefault(previous)
+        }
+    }
+
     @Test fun acceptsOnlySupportedYouTubeLinks() {
         val id = "dQw4w9WgXcQ"
         listOf("https://youtube.com/watch?v=$id", "공유 https://youtu.be/$id?t=10",
@@ -117,20 +151,15 @@ class CatalogTest {
         assertEquals(lookup.id, info.track.id)
         assertEquals(lookup.title, info.track.title)
         assertTrue(info.track.seconds > 0)
-        val connection = URI(info.url).toURL().openConnection() as HttpURLConnection
-        try {
-            connection.connectTimeout = 10_000
-            connection.readTimeout = 10_000
-            connection.setRequestProperty("User-Agent", BROWSER_AGENT)
-            connection.setRequestProperty("Range", "bytes=0-4095")
-            assertTrue("HTTP ${connection.responseCode}", connection.responseCode in setOf(200, 206))
-            assertTrue(connection.contentType.substringBefore('/') in setOf("audio", "video", "application"))
-            val prefix = connection.inputStream.use { it.readNBytes(16) }
+        PrivateNetwork.stream.newCall(okhttp3.Request.Builder().url(info.url)
+            .header("Range", "bytes=0-4095").build()).execute().use { connection ->
+            assertTrue("HTTP ${connection.code}", connection.code in setOf(200, 206))
+            val type = connection.header("Content-Type").orEmpty()
+            assertTrue(type.substringBefore('/') in setOf("audio", "video", "application"))
+            val prefix = checkNotNull(connection.body).byteStream().use { it.readNBytes(16) }
             assertEquals(16, prefix.size)
             println("video=${info.track.title}, seconds=${info.track.seconds}, audioOnly=${info.audioOnly}, " +
-                "http=${connection.responseCode}, type=${connection.contentType}")
-        } finally {
-            connection.disconnect()
+                "http=${connection.code}, type=$type")
         }
     }
 }

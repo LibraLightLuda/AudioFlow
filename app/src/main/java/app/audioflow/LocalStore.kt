@@ -227,7 +227,20 @@ class LocalStore(context: Context) {
     }
 }
 
-class AudioFlowApp : Application() {
+class AudioFlowApp : Application(), coil.ImageLoaderFactory {
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    override fun onCreate() {
+        super.onCreate()
+        androidx.media3.common.util.Log.setLogLevel(androidx.media3.common.util.Log.LOG_LEVEL_OFF)
+        androidx.media3.common.util.Log.setLogStackTraces(false)
+    }
+
+    override fun newImageLoader(): coil.ImageLoader = coil.ImageLoader.Builder(this)
+        .okHttpClient(PrivateNetwork.images)
+        .diskCache(null)
+        .logger(null)
+        .build()
+
     val store by lazy { LocalStore(this) }
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val sleepDeadline = MutableStateFlow(0L)

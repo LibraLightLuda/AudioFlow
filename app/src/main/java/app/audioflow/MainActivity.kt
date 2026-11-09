@@ -170,10 +170,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     private fun connect() {
         if (future != null) return
         connectionError = false
         val pending = MediaController.Builder(this, SessionToken(this, ComponentName(this, PlaybackService::class.java)))
+            .setBitmapLoader(privateArtworkLoader(this))
             .setListener(object : MediaController.Listener {
                 override fun onDisconnected(controller: MediaController) {
                     if (this@MainActivity.controller === controller) {

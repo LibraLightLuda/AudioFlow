@@ -582,7 +582,7 @@ private fun CatalogThumbnail(url: String, channel: Boolean) {
         .background(MaterialTheme.colorScheme.surfaceContainerHigh), contentAlignment = Alignment.Center) {
         Icon(if (channel) Icons.Default.Person else Icons.AutoMirrored.Filled.List, null,
             tint = MaterialTheme.colorScheme.primary)
-        if (url.isNotBlank()) AsyncImage(url, null, Modifier.matchParentSize(), contentScale = ContentScale.Crop)
+        PrivateNetwork.imageUrl(url)?.let { AsyncImage(it, null, Modifier.matchParentSize(), contentScale = ContentScale.Crop) }
     }
 }
 
@@ -607,7 +607,7 @@ private fun Artwork(track: Track?, modifier: Modifier) {
     Box(modifier.clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh),
         contentAlignment = Alignment.Center) {
         Icon(Icons.Default.PlayArrow, null, tint = MaterialTheme.colorScheme.primary)
-        if (!track?.thumbnail.isNullOrBlank()) AsyncImage(model = track?.thumbnail, contentDescription = null,
+        if (!track?.thumbnail.isNullOrBlank()) AsyncImage(model = track?.thumbnail?.let(PrivateNetwork::imageUrl), contentDescription = null,
             contentScale = ContentScale.Crop, modifier = Modifier.matchParentSize())
     }
 }

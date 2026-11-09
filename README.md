@@ -1,10 +1,10 @@
-# AudioFlow 1.2.0
+# AudioFlow 1.2.1
 
 AudioFlow는 Google 계정 없이 공개 YouTube 콘텐츠의 오디오를 듣는 개인용 Android 앱입니다. Android 8.0(API 26) 이상을 대상으로 합니다. 검색과 스트리밍에는 인터넷 연결이 필요합니다. 즐겨찾기, 재생 기록, 위치, 플레이리스트, 대기열 및 설정은 기기에 저장됩니다.
 
 ## 설치와 사용
 
-1. [GitHub 릴리스의 개인 설치용 APK](https://github.com/LibraLightLuda/AudioFlow/releases/download/v1.2.0/AudioFlow-1.2.0.apk)를 받아 휴대전화에서 엽니다. 기존 버전이 설치돼 있으면 업데이트합니다. USB 디버깅을 사용한다면 APK를 내려받은 폴더에서 `adb install -r AudioFlow-1.2.0.apk`를 실행하세요.
+1. [GitHub 릴리스의 개인 설치용 APK](https://github.com/LibraLightLuda/AudioFlow/releases/download/v1.2.1/AudioFlow-1.2.1.apk)를 받아 휴대전화에서 엽니다. 기존 버전이 설치돼 있으면 업데이트합니다. USB 디버깅을 사용한다면 APK를 내려받은 폴더에서 `adb install -r AudioFlow-1.2.1.apk`를 실행하세요.
 2. 홈의 **노래** 검색은 YouTube Music과 일반 동영상 검색 결과를 합쳐 관련 공식 뮤직비디오·음원을 먼저 표시합니다. **전체**와 **채널** 필터도 사용할 수 있습니다. YouTube에서 영상의 **공유 → AudioFlow**를 선택하면 해당 영상이 바로 재생됩니다.
 3. 채널을 열면 공개 동영상·뮤직비디오, 플레이리스트, Shorts 중 채널이 제공하는 목록을 볼 수 있습니다. 목록 끝의 **더 보기**로 다음 항목을 불러오고, 공개 플레이리스트를 열어 **내 플레이리스트로 저장**하면 로컬 복사본이 생깁니다.
 4. 검색 결과에서 골라 재생하거나 공유로 바로 재생한 곡은 라이브러리의 **기본 플레이리스트**에 자동 추가됩니다. 곡 옵션의 **YouTube에서 채널 열기**는 YouTube 앱을 우선 사용하고, 설치되지 않았다면 브라우저에서 엽니다.
@@ -29,6 +29,7 @@ $env:AUDIOFLOW_LIVE = '1'
 
 ## 구현 및 제약
 
+- 1.2.1은 검색·재생·자막·화면/알림 이미지의 HTTP 요청에 쿠키·인증 헤더 제거, 목적별 HTTPS 호스트 제한, 이동 전 리디렉션 검사를 적용합니다. 민감한 오류 로그와 HTTP 디스크 캐시도 줄였습니다. IP 및 요청 방식은 YouTube에 보이며 익명성이나 제재 방지를 보장하지 않습니다. [보호 범위와 남는 한계](SECURITY.md)
 - Kotlin, Compose Material 3, Media3 1.9.2, Room, DataStore, Coroutines/Flow를 사용합니다. 콘텐츠 조회는 `Catalog` 인터페이스와 NewPipeExtractor 어댑터로 분리했습니다.
 - [NewPipeExtractor v0.27.0](https://github.com/TeamNewPipe/NewPipeExtractor/releases/tag/v0.27.0)을 고정했습니다. 해당 버전은 Java 17을 사용하며 GPL-3.0-or-later입니다. 이 프로젝트의 소스도 GPL-3.0-or-later로 제공합니다. [라이선스 전문](LICENSE)
 - 오디오 전용 HTTP 스트림을 우선 사용합니다. 오디오 전용 스트림이 없는 경우 지원되는 결합 스트림에서 소리만 재생하므로 영상 데이터도 전송될 수 있습니다.

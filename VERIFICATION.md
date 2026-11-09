@@ -1,6 +1,17 @@
-# AudioFlow 1.2.0 검증
+# AudioFlow 1.2.1 검증
 
 검증일은 2026-11-09 (KST)입니다. 검증 환경은 Windows, JDK 17, Gradle 8.14.3, Android SDK 및 Build Tools 36입니다.
+
+## 1.2.1 보안 변경 검증
+
+- `AUDIOFLOW_LIVE=1`로 JVM 테스트 15개 통과, 실패·오류·건너뜀 0개. `PrivateNetworkTest` 6개와 기존/확장 `CatalogTest` 9개입니다.
+- 보안 단위 검사: 쿠키·인증·계정·임의 기기 헤더 제거, 목적별 주소 허용, HTTP·외부/로그인 주소·IP 리터럴·사용자 정보가 들어간 URL 차단, 연결 전 리디렉션 검증, 반복 이동 상한, 다른 호스트로 POST 본문 전달 차단, CDN 간 범위 요청 유지, 응답 크기 상한.
+- 실제 HTTP 검사: JVM 전역 쿠키 저장소에 합성 SID 쿠키를 넣고 요청에도 합성 Cookie/Authorization을 추가했습니다. 공개 YouTube 페이지와 실제 썸네일 요청에서 전송 직전 OkHttp 네트워크 인터셉터로 Cookie/Authorization/Proxy-Authorization/계정 선택 헤더가 없음을 확인했습니다. HTTP 200과 응답 바이트를 확인했고 호출자에게 Set-Cookie가 전달되지 않았습니다. 실제 Google 계정이나 브라우저 쿠키를 사용하지 않았습니다.
+- 실서비스 회귀 검사: 공개 검색 20개, Rick Astley 채널 결과와 업로드 30+30개, 공개 플레이리스트 13개 및 트랙 조회, 음악 검색 최상위 공식 MV, 영어 공개 자막, Google Search Stories 10개, `Me at the zoo` 오디오 전용 HTTP 206 / `audio/webm` 바이트 확인.
+- `assembleRelease`, `lintRelease`, `assembleDebugAndroidTest` 통과. Lint 오류 0개, 경고 21개. Windows의 일시적인 DEX 파일 사용 중 오류는 Gradle 데몬 종료 후 동일 빌드로 해소했습니다.
+- 개인 설치용 `AudioFlow-1.2.1.apk`의 16 KiB ZIP 정렬과 v2/v3 서명 검증 통과. 1.2.0과 서명 인증서가 일치합니다. APK 패키지 `app.audioflow`, versionCode 4, versionName 1.2.1, debuggable 미설정, 백업·평문 통신 비활성 및 네트워크 보안 설정 참조를 확인했습니다. SHA-256은 `8DE6E350A286673B8C4B3A8B3A3D05BA780350FDF72E9C81C426F50DB71FB829`입니다.
+- Android 실제 기기는 `adb devices -l` 결과 연결 없음. APK 내부 실행, 실제 기기의 TLS/쿠키 저장소 분리·알림 이미지·잠금 화면·블루투스 동작과 패킷 캡처는 이번에도 수행하지 못했습니다. JVM 검증을 휴대전화 검증으로 간주하지 않습니다.
+- 이 변경은 데이터베이스 스키마를 변경하지 않습니다. 아래 기록 삭제·마이그레이션 결과는 1.2.0에서 수행한 검증을 유지한 것이며 1.2.1에서 반복 수행하지 않았습니다. 보호 범위와 잔여 노출은 [SECURITY.md](SECURITY.md)에 설명합니다.
 
 | 항목 | 결과 | 확인 방법 |
 | --- | --- | --- |

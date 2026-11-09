@@ -1,0 +1,172 @@
+package app.audioflow
+
+import android.app.Application
+import android.content.Context
+import androidx.datastore.preferences.core.*
+import androidx.datastore.preferences.preferencesDataStore
+import androidx.room.*
+import java.io.IOException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.*
+import org.json.JSONArray
+import org.json.JSONObject
+
+@Entity(tableName = "tracks", primaryKeys = ["id"])
+data class SavedTrack(
+    @Embedded val track: Track,
+    val playedAt: Long = 0,
+    val positionMs: Long = 0,
+    val favoriteAt: Long = 0,
+)
+
+@Entity(tableName = "playlists")
+data class LocalPlaylist(@PrimaryKey(autoGenerate = true) val id: Long = 0, val name: String)
+
+@Entity(
+    tableName = "playlist_tracks",
+    primaryKeys = ["playlistId", "trackId"],
+    foreignKeys = [ForeignKey(
+        entity = LocalPlaylist::class,
+        parentColumns = ["id"],
+        childColumns = ["playlistId"],
+        onDelete = ForeignKey.CASCADE,
+    )],
+    indices = [Index("trackId")],
+)
+data class PlaylistEntry(val playlistId: Long, val trackId: String, val addedAt: Long)
+
+@Dao
+abstract class LibraryDao {
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    abstract suspend fun insert(row: SavedTrack)
+
+    @Query("UPDATE tracks SET title=:title, channel=:channel, thumbnail=:thumbnail, seconds=:seconds WHERE id=:id")
+    abstract suspend fun refresh(id: String, title: String, channel: String, thumbnail: String, seconds: Long)
+
+    @Query("SELECT * FROM tracks WHERE id=:id")
+    abstract suspend fun track(id: String): SavedTrack?
+
+    @Query("UPDATE tracks SET playedAt=:at, positionMs=:position WHERE id=:id")
+    abstract suspend fun updatePosition(id: String, position: Long, at: Long)
+
+    @Query("UPDATE tracks SET favoriteAt=CASE WHEN favoriteAt=0 THEN :now ELSE 0 END WHERE id=:id")
+    abstract suspend fun flipFavorite(id: String, now: Long)
+
+    @Query("SELECT * FROM tracks WHERE playedAt>0 ORDER BY playedAt DESC LIMIT 100")
+    abstract fun history(): Flow<List<SavedTrack>>
+
+    @Query("SELECT * FROM tracks WHERE favoriteAt>0 ORDER BY favoriteAt DESC")
+    abstract fun favorites(): Flow<List<SavedTrack>>
+
+    @Query("UPDATE tracks SET playedAt=0, positionMs=0 WHERE playedAt>0")
+    abstract suspend fun clearHistory()
+
+    @Query("SELECT * FROM playlists ORDER BY id")
+    abstract fun playlists(): Flow<List<LocalPlaylist>>
+
+    @Query("SELECT tracks.* FROM tracks JOIN playlist_tracks ON tracks.id=trackId WHERE playlistId=:id ORDER BY addedAt, trackId")
+    abstract fun playlistTracks(id: Long): Flow<List<SavedTrack>>
+
+    @Insert
+    abstract suspend fun createPlaylist(playlist: LocalPlaylist): Long
+
+    @Delete
+    abstract suspend fun deletePlaylist(playlist: LocalPlaylist)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    abstract suspend fun insertPlaylistEntry(entry: PlaylistEntry)
+
+    @Query("DELETE FROM playlist_tracks WHERE playlistId=:listId AND trackId=:trackId")
+    abstract suspend fun removeFromPlaylist(listId: Long, trackId: String)
+
+    private suspend fun remember(track: Track) {
+        insert(SavedTrack(track))
+        refresh(track.id, track.title, track.channel, track.thumbnail, track.seconds)
+    }
+
+    @Transaction
+    open suspend fun played(track: Track, position: Long) {
+        remember(track)
+        updatePosition(track.id, position.coerceAtLeast(0), System.currentTimeMillis())
+    }
+
+    @Transaction
+    open suspend fun toggleFavorite(track: Track) {
+        remember(track)
+        flipFavorite(track.id, System.currentTimeMillis())
+    }
+
+    @Transaction
+    open suspend fun addToPlaylist(id: Long, track: Track) {
+        remember(track)
+        insertPlaylistEntry(PlaylistEntry(id, track.id, System.currentTimeMillis()))
+    }
+}
+
+@Database(entities = [SavedTrack::class, LocalPlaylist::class, PlaylistEntry::class], version = 1, exportSchema = false)
+abstract class AudioFlowDatabase : RoomDatabase() {
+    abstract fun library(): LibraryDao
+}
+
+data class QueueState(
+    val tracks: List<Track> = emptyList(),
+    val index: Int = 0,
+    val position: Long = 0,
+    val speed: Float = 1f,
+    val repeat: Int = 0,
+    val shuffle: Boolean = false,
+)
+
+private val Context.settings by preferencesDataStore("audioflow")
+
+class LocalStore(context: Context) {
+    val dao = Room.databaseBuilder(context, AudioFlowDatabase::class.java, "audioflow.db").build().library()
+    private val settings = context.settings
+    private val queueKey = stringPreferencesKey("queue")
+    private val darkKey = booleanPreferencesKey("dark")
+    private val data = settings.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }
+    val dark = data.map { it[darkKey] ?: true }.distinctUntilChanged()
+
+    suspend fun setDark(dark: Boolean) {
+        settings.edit { it[darkKey] = dark }
+    }
+
+    suspend fun readQueue(): QueueState {
+        val raw = data.first()[queueKey] ?: return QueueState()
+        return runCatching {
+            val json = JSONObject(raw)
+            val tracks = json.getJSONArray("tracks")
+            QueueState(
+                tracks = List(tracks.length()) { i ->
+                    val item = tracks.getJSONObject(i)
+                    Track(item.getString("id"), item.getString("title"), item.optString("channel"),
+                        item.optString("thumbnail"), item.optLong("seconds"))
+                },
+                index = json.optInt("index"),
+                position = json.optLong("position").coerceAtLeast(0),
+                speed = json.optDouble("speed", 1.0).toFloat().coerceIn(0.5f, 2f),
+                repeat = json.optInt("repeat").coerceIn(0, 2),
+                shuffle = json.optBoolean("shuffle"),
+            )
+        }.getOrDefault(QueueState())
+    }
+
+    suspend fun saveQueue(state: QueueState) {
+        val tracks = JSONArray()
+        state.tracks.forEach { track ->
+            tracks.put(JSONObject().put("id", track.id).put("title", track.title)
+                .put("channel", track.channel).put("thumbnail", track.thumbnail).put("seconds", track.seconds))
+        }
+        val raw = JSONObject().put("tracks", tracks).put("index", state.index).put("position", state.position)
+            .put("speed", state.speed).put("repeat", state.repeat).put("shuffle", state.shuffle).toString()
+        settings.edit { it[queueKey] = raw }
+    }
+}
+
+class AudioFlowApp : Application() {
+    val store by lazy { LocalStore(this) }
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    val sleepDeadline = MutableStateFlow(0L)
+}

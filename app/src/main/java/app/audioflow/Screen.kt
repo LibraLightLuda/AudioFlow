@@ -11,6 +11,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -132,6 +134,7 @@ internal fun AudioFlowScreen(
     var deleteList by remember { mutableStateOf<LocalPlaylist?>(null) }
     var playback by remember { mutableStateOf(PlaybackUi()) }
     var playRequest by remember { mutableStateOf<Job?>(null) }
+    var importing by remember { mutableStateOf(false) }
 
     DisposableEffect(controller) {
         if (controller == null) return@DisposableEffect onDispose {}
@@ -161,12 +164,12 @@ internal fun AudioFlowScreen(
             queueOpen = false
         }
     }
-    BackHandler(playerOpen || playlistId != null || (page == Page.Home && search.query.isNotBlank())) {
+    BackHandler(playerOpen || playlistId != null || (page == Page.Home && (search.canGoBack || search.query.isNotBlank()))) {
         when {
             queueOpen -> queueOpen = false
             playerOpen -> playerOpen = false
             playlistId != null -> playlistId = null
-            else -> search.reset()
+            else -> search.back()
         }
     }
 
@@ -204,6 +207,21 @@ internal fun AudioFlowScreen(
             remote.play()
         }
         playerOpen = true
+    }
+    fun removeHistory(track: Track) {
+        update { dao.removeHistory(track.id) }
+    }
+    fun importPlaylist(result: CatalogResult) {
+        if (importing) return
+        importing = true
+        update {
+            try {
+                dao.importPlaylist(result.heading.trim().take(70).ifBlank { "YouTube 플레이리스트" }, result.tracks)
+                toast("라이브러리에 플레이리스트를 저장했어요.")
+            } finally {
+                importing = false
+            }
+        }
     }
     val favoriteIds = favorites.mapTo(hashSetOf()) { it.track.id }
     val callbacks = TrackActions(
@@ -258,7 +276,7 @@ internal fun AudioFlowScreen(
                     queueOpen, { queueOpen = it }, { playerOpen = false; queueOpen = false },
                 )
                 page == Page.Home -> HomeScreen(modifier, search, history.map { it.track },
-                    callbacks, ::play, connectionError, connect)
+                    callbacks, ::play, ::removeHistory, ::importPlaylist, importing, connectionError, connect)
                 page == Page.Library -> {
                     val playlist = playlists.firstOrNull { it.id == playlistId }
                     val entries by remember(playlist?.id) { playlist?.let { dao.playlistTracks(it.id) }
@@ -268,7 +286,7 @@ internal fun AudioFlowScreen(
                         playlists, playlist, entries.map { it.track }, { playlistId = it }, { createList = true },
                         { deleteList = it }, { track -> playlist?.let { list ->
                             update { dao.removeFromPlaylist(list.id, track.id) }
-                        } }, callbacks, ::play,
+                        } }, ::removeHistory, callbacks, ::play,
                     )
                 }
                 else -> SettingsScreen(modifier, dark, { update { store.setDark(it) } },
@@ -356,31 +374,59 @@ private fun Headline(tag: String, title: String, subtitle: String? = null) {
 @Composable
 private fun HomeScreen(
     modifier: Modifier, search: SearchModel, history: List<Track>, actions: TrackActions,
-    play: (List<Track>, Int) -> Unit, connectionError: Boolean, connect: () -> Unit,
+    play: (List<Track>, Int) -> Unit, removeHistory: (Track) -> Unit,
+    importPlaylist: (CatalogResult) -> Unit, importing: Boolean, connectionError: Boolean, connect: () -> Unit,
 ) {
     val focus = LocalFocusManager.current
     val results = search.result
+    val channel = results?.channel
+    val browsing = search.canGoBack || channel != null || results?.isPlaylist == true
     val showingResults = results != null || search.loading || search.error != null
     val tracks = if (showingResults) results?.tracks.orEmpty() else history.take(20)
-    LazyColumn(modifier, contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp)) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(channel?.id, results?.section, results?.isPlaylist, search.canGoBack) {
+        listState.scrollToItem(0)
+    }
+    LazyColumn(modifier, state = listState, contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp)) {
         item {
-            Headline("AUDIOFLOW", "무엇을 들을까요?", "YouTube에서 찾거나 공유 링크를 열어보세요.")
-            OutlinedTextField(
-                value = search.query, onValueChange = { search.query = it.take(1500) },
-                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                singleLine = true, placeholder = { Text("검색어 또는 YouTube 링크") },
-                leadingIcon = { Icon(Icons.Default.Search, null) },
-                trailingIcon = {
-                    if (search.query.isNotBlank()) IconButton(onClick = search::reset) {
-                        Icon(Icons.Default.Close, "검색 지우기")
+            if (browsing) TextButton(onClick = search::back) { Text("뒤로") }
+            if (!browsing) {
+                Headline("AUDIOFLOW", "무엇을 들을까요?", "곡 제목, 유튜버 이름, @핸들 또는 YouTube 링크로 찾아보세요.")
+                OutlinedTextField(
+                    value = search.query, onValueChange = { search.query = it.take(1500) },
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    singleLine = true, placeholder = { Text("곡 제목, 유튜버 이름 또는 링크") },
+                    leadingIcon = { Icon(Icons.Default.Search, null) },
+                    trailingIcon = {
+                        if (search.query.isNotBlank()) IconButton(onClick = search::reset) {
+                            Icon(Icons.Default.Close, "검색 지우기")
+                        }
+                    },
+                    shape = RoundedCornerShape(18.dp),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { focus.clearFocus(); search.submit() }),
+                )
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = !search.channelsOnly,
+                        onClick = { focus.clearFocus(); search.selectChannelsOnly(false) }, label = { Text("전체") })
+                    FilterChip(selected = search.channelsOnly,
+                        onClick = { focus.clearFocus(); search.selectChannelsOnly(true) }, label = { Text("채널") })
+                }
+                Button(onClick = { focus.clearFocus(); search.submit() },
+                    enabled = search.query.isNotBlank() && !search.loading) { Text("검색 및 링크 열기") }
+            }
+            if (channel != null) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    CatalogThumbnail(channel.thumbnail, true)
+                    Headline("YOUTUBE CHANNEL", channel.name)
+                }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    channel.sections.forEach { section ->
+                        FilterChip(selected = section == results.section,
+                            onClick = { search.selectSection(section) }, label = { Text(section.label) })
                     }
-                },
-                shape = RoundedCornerShape(18.dp),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { focus.clearFocus(); search.submit() }),
-            )
-            Button(onClick = { focus.clearFocus(); search.submit() },
-                enabled = search.query.isNotBlank() && !search.loading) { Text("검색 및 링크 열기") }
+                }
+            }
             if (connectionError) TextButton(onClick = connect) { Text("플레이어 다시 연결") }
         }
         item {
@@ -391,18 +437,77 @@ private fun HomeScreen(
                 }
                 search.error != null -> {
                     Text(search.error.orEmpty(), Modifier.padding(top = 20.dp), color = MaterialTheme.colorScheme.error)
-                    TextButton(onClick = { search.submit() }) { Text("다시 시도") }
+                    TextButton(onClick = search::retry) { Text("다시 시도") }
                 }
                 else -> {
-                    SectionTitle(results?.heading ?: "최근 재생", tracks.size)
-                    if (tracks.isEmpty()) EmptyState(if (results != null) "표시할 동영상을 찾지 못했어요." else "재생한 트랙이 여기에 표시돼요.")
-                    else if (results != null && tracks.size > 1) {
-                        TextButton(onClick = { play(tracks, 0) }) { Text("모두 재생") }
+                    val count = tracks.size + results?.channels.orEmpty().size + results?.playlists.orEmpty().size
+                    SectionTitle(results?.heading ?: "최근 재생", count)
+                    if (tracks.isEmpty() && results?.channels.isNullOrEmpty() && results?.playlists.isNullOrEmpty()) {
+                        EmptyState(if (results != null) "표시할 공개 콘텐츠를 찾지 못했어요." else "재생한 트랙이 여기에 표시돼요.")
+                    }
+                    if (tracks.isNotEmpty() && results != null) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (tracks.size > 1) TextButton(onClick = { play(tracks, 0) }) { Text("모두 재생") }
+                            if (results.isPlaylist) TextButton(onClick = { importPlaylist(results) }, enabled = !importing) {
+                                Text("내 플레이리스트로 저장")
+                            }
+                        }
+                    }
+                    if (!showingResults && tracks.isNotEmpty()) {
+                        Text("항목을 왼쪽으로 밀거나 옵션에서 기록을 지울 수 있어요.",
+                            style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
         }
-        itemsIndexed(tracks) { index, track -> TrackRow(track, actions, { play(tracks, index) }) }
+        if (results?.channels?.isNotEmpty() == true) {
+            if (!search.channelsOnly) item { SectionTitle("채널", results.channels.size) }
+            itemsIndexed(results.channels, key = { _, item -> "channel-${item.link.url}" }) { _, item ->
+                ListItem(
+                    headlineContent = { Text(item.name) }, supportingContent = { Text("채널 보기") },
+                    leadingContent = { CatalogThumbnail(item.thumbnail, true) },
+                    modifier = Modifier.clickable { search.open(item.link) },
+                )
+            }
+        }
+        if (results?.playlists?.isNotEmpty() == true) {
+            if (channel == null) item { SectionTitle("공개 플레이리스트", results.playlists.size) }
+            itemsIndexed(results.playlists, key = { _, item -> "playlist-${item.link.id}" }) { _, item ->
+                ListItem(
+                    headlineContent = { Text(item.name) },
+                    supportingContent = { Text(if (item.count >= 0) "동영상 ${item.count}개" else "공개 플레이리스트") },
+                    leadingContent = { CatalogThumbnail(item.thumbnail, false) },
+                    modifier = Modifier.clickable { search.open(item.link) },
+                )
+            }
+        }
+        if (channel == null && !results?.channels.isNullOrEmpty() && tracks.isNotEmpty()) {
+            item { SectionTitle("동영상", tracks.size) }
+        }
+        itemsIndexed(tracks, key = { index, track -> if (showingResults) "result-$index-${track.id}" else "history-${track.id}" }) { index, track ->
+            if (showingResults) TrackRow(track, actions, { play(tracks, index) })
+            else HistoryRow(track, actions, { play(tracks, index) }, { removeHistory(track) })
+        }
+        if (results?.more != null) item {
+            TextButton(onClick = if (search.error == null) search::more else search::retry, enabled = !search.loading) {
+                Text(when {
+                    search.loading -> "불러오는 중…"
+                    search.error != null -> "다시 시도"
+                    else -> "더 보기"
+                })
+            }
+        }
+    }
+}
+
+@Composable
+private fun CatalogThumbnail(url: String, channel: Boolean) {
+    val size = if (channel) Modifier.size(52.dp) else Modifier.size(72.dp, 44.dp)
+    Box(size.clip(if (channel) CircleShape else RoundedCornerShape(8.dp))
+        .background(MaterialTheme.colorScheme.surfaceContainerHigh), contentAlignment = Alignment.Center) {
+        Icon(if (channel) Icons.Default.Person else Icons.AutoMirrored.Filled.List, null,
+            tint = MaterialTheme.colorScheme.primary)
+        if (url.isNotBlank()) AsyncImage(url, null, Modifier.matchParentSize(), contentScale = ContentScale.Crop)
     }
 }
 
@@ -433,7 +538,10 @@ private fun Artwork(track: Track?, modifier: Modifier) {
 }
 
 @Composable
-private fun TrackRow(track: Track, actions: TrackActions, click: () -> Unit, remove: (() -> Unit)? = null) {
+private fun TrackRow(
+    track: Track, actions: TrackActions, click: () -> Unit, remove: (() -> Unit)? = null,
+    removeLabel: String = "목록에서 제거",
+) {
     var menu by remember(track.id) { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Row(Modifier.weight(1f).clickable(onClick = click).padding(vertical = 8.dp),
@@ -453,7 +561,7 @@ private fun TrackRow(track: Track, actions: TrackActions, click: () -> Unit, rem
                 DropdownMenuItem(text = { Text(if (track.id in actions.favorites) "즐겨찾기에서 제거" else "즐겨찾기에 추가") },
                     onClick = { menu = false; actions.favorite(track) })
                 DropdownMenuItem(text = { Text("플레이리스트에 추가") }, onClick = { menu = false; actions.playlist(track) })
-                remove?.let { DropdownMenuItem(text = { Text("목록에서 제거") }, onClick = { menu = false; it() }) }
+                remove?.let { DropdownMenuItem(text = { Text(removeLabel) }, onClick = { menu = false; it() }) }
             }
         }
     }
@@ -461,11 +569,38 @@ private fun TrackRow(track: Track, actions: TrackActions, click: () -> Unit, rem
 }
 
 @Composable
+private fun HistoryRow(track: Track, actions: TrackActions, play: () -> Unit, remove: () -> Unit) {
+    val state = rememberSwipeToDismissBoxState(positionalThreshold = { it * 0.45f })
+    LaunchedEffect(state.settledValue) {
+        if (state.settledValue == SwipeToDismissBoxValue.EndToStart) {
+            remove()
+            state.reset()
+        }
+    }
+    SwipeToDismissBox(
+        state = state,
+        enableDismissFromStartToEnd = false,
+        backgroundContent = {
+            if (state.dismissDirection == SwipeToDismissBoxValue.EndToStart) {
+                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.errorContainer).padding(end = 18.dp),
+                    contentAlignment = Alignment.CenterEnd) {
+                    Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.onErrorContainer)
+                }
+            }
+        },
+    ) {
+        Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
+            TrackRow(track, actions, play, remove, "재생 기록에서 삭제")
+        }
+    }
+}
+
+@Composable
 private fun LibraryScreen(
     modifier: Modifier, shelf: Shelf, selectShelf: (Shelf) -> Unit, favorites: List<Track>,
     history: List<Track>, lists: List<LocalPlaylist>, active: LocalPlaylist?, entries: List<Track>,
     open: (Long?) -> Unit, create: () -> Unit, delete: (LocalPlaylist) -> Unit, remove: (Track) -> Unit,
-    actions: TrackActions, play: (List<Track>, Int) -> Unit,
+    removeHistory: (Track) -> Unit, actions: TrackActions, play: (List<Track>, Int) -> Unit,
 ) {
     val tracks = if (active != null) entries else when (shelf) {
         Shelf.Favorite -> favorites
@@ -499,8 +634,14 @@ private fun LibraryScreen(
             }
         } else {
             if (tracks.isEmpty()) item { EmptyState("아직 저장된 트랙이 없어요.") }
-            itemsIndexed(tracks) { index, track ->
-                TrackRow(track, actions, { play(tracks, index) }, if (active == null) null else { { remove(track) } })
+            if (shelf == Shelf.History && active == null && tracks.isNotEmpty()) item {
+                Text("항목을 왼쪽으로 밀거나 옵션에서 기록을 지울 수 있어요.",
+                    style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
+            }
+            itemsIndexed(tracks, key = { _, track -> track.id }) { index, track ->
+                if (active == null && shelf == Shelf.History) {
+                    HistoryRow(track, actions, { play(tracks, index) }, { removeHistory(track) })
+                } else TrackRow(track, actions, { play(tracks, index) }, if (active == null) null else { { remove(track) } })
             }
         }
     }

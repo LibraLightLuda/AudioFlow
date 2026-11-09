@@ -11,13 +11,20 @@ import kotlinx.coroutines.withContext
 import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.Page
 import org.schabi.newpipe.extractor.ServiceList
+import org.schabi.newpipe.extractor.InfoItem
+import org.schabi.newpipe.extractor.channel.ChannelInfo
+import org.schabi.newpipe.extractor.channel.ChannelInfoItem
+import org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo
+import org.schabi.newpipe.extractor.channel.tabs.ChannelTabs
 import org.schabi.newpipe.extractor.downloader.Downloader
 import org.schabi.newpipe.extractor.downloader.Request
 import org.schabi.newpipe.extractor.downloader.Response
 import org.schabi.newpipe.extractor.exceptions.ContentNotAvailableException
 import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
 import org.schabi.newpipe.extractor.playlist.PlaylistInfo
+import org.schabi.newpipe.extractor.playlist.PlaylistInfoItem
 import org.schabi.newpipe.extractor.search.SearchInfo
+import org.schabi.newpipe.extractor.services.youtube.linkHandler.YoutubeSearchQueryHandlerFactory
 import org.schabi.newpipe.extractor.stream.ContentAvailability
 import org.schabi.newpipe.extractor.stream.DeliveryMethod
 import org.schabi.newpipe.extractor.stream.Stream
@@ -35,17 +42,22 @@ data class Track(
 sealed interface YoutubeLink {
     data class Video(val id: String) : YoutubeLink
     data class Playlist(val id: String) : YoutubeLink
+    data class Channel(val url: String, val section: ChannelSection? = null) : YoutubeLink
 
     companion object {
         private val videoId = Regex("[A-Za-z0-9_-]{11}")
         private val listId = Regex("[A-Za-z0-9_-]{10,100}")
+        private val channelId = Regex("UC[A-Za-z0-9_-]{22}")
+        private val channelSlug = Regex("[\\p{L}\\p{M}\\p{N}_.·-]{1,100}")
         private val hosts = setOf("youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be")
         private val sharedUrl = Regex("""(?:https?://|(?:www\.|m\.|music\.)?youtube\.com/|youtu\.be/)\S+""", RegexOption.IGNORE_CASE)
 
         fun isVideoId(id: String) = videoId.matches(id)
 
         fun fromText(text: String): YoutubeLink? {
-            val raw = sharedUrl.find(text.trim())?.value?.trimEnd(')', ']', '>', ',', '.', '"') ?: return null
+            val input = text.trim()
+            if (input.startsWith('@') && channelSlug.matches(input.drop(1))) return channelLink(listOf(input), null)
+            val raw = sharedUrl.find(input)?.value?.trimEnd(')', ']', '>', ',', '.', '"') ?: return null
             val uri = runCatching { URI(if (raw.contains("://")) raw else "https://$raw") }.getOrNull() ?: return null
             val host = uri.host?.lowercase()
             if (host !in hosts || uri.userInfo != null || uri.port != -1 ||
@@ -64,21 +76,53 @@ sealed interface YoutubeLink {
                 else -> null
             }
             if (id != null && isVideoId(id)) return Video(id)
+            if (host == "youtu.be") return null
             val playlist = query["list"]
-            return if (host != "youtu.be" && path == listOf("playlist") && playlist != null &&
-                listId.matches(playlist)) Playlist(playlist) else null
+            if (path == listOf("playlist") && playlist != null && listId.matches(playlist)) return Playlist(playlist)
+            val rootSize = when {
+                path.firstOrNull()?.let { it.startsWith('@') && channelSlug.matches(it.drop(1)) } == true -> 1
+                path.size >= 2 && path[0] == "channel" && channelId.matches(path[1]) -> 2
+                path.size >= 2 && path[0] in setOf("c", "user") && channelSlug.matches(path[1]) -> 2
+                else -> return null
+            }
+            val tail = path.drop(rootSize)
+            val section = ChannelSection.entries.firstOrNull { tail == listOf(it.tab) }
+            return if (tail.isEmpty() || tail == listOf("featured") || section != null) channelLink(path.take(rootSize), section) else null
         }
+
+        private fun channelLink(path: List<String>, section: ChannelSection?) =
+            Channel(URI("https", "www.youtube.com", "/" + path.joinToString("/"), null).toASCIIString(), section)
     }
 }
 
-data class CatalogResult(val heading: String, val tracks: List<Track>)
+enum class ChannelSection(val tab: String, val label: String) {
+    Videos(ChannelTabs.VIDEOS, "동영상·뮤직비디오"),
+    Playlists(ChannelTabs.PLAYLISTS, "플레이리스트"),
+    Shorts(ChannelTabs.SHORTS, "Shorts"),
+}
+
+data class CatalogChannel(val link: YoutubeLink.Channel, val name: String, val thumbnail: String)
+data class CatalogPlaylist(val link: YoutubeLink.Playlist, val name: String, val thumbnail: String, val count: Long)
+data class ChannelHeader(val id: String, val name: String, val thumbnail: String, val sections: List<ChannelSection>)
+
+data class CatalogResult(
+    val heading: String,
+    val tracks: List<Track> = emptyList(),
+    val channels: List<CatalogChannel> = emptyList(),
+    val playlists: List<CatalogPlaylist> = emptyList(),
+    val channel: ChannelHeader? = null,
+    val section: ChannelSection? = null,
+    val isPlaylist: Boolean = false,
+    val more: (suspend () -> CatalogResult)? = null,
+)
 data class ResolvedTrack(val track: Track, val url: String, val audioOnly: Boolean)
 class CatalogException(message: String) : IOException(message)
 class CatalogHttpException(val status: Int) : IOException("HTTP $status")
 
 interface Catalog {
-    suspend fun search(query: String): CatalogResult
+    suspend fun search(query: String, channelsOnly: Boolean = false): CatalogResult
     suspend fun lookup(link: YoutubeLink): CatalogResult
+    suspend fun channelSection(channel: ChannelHeader, section: ChannelSection): CatalogResult
     fun resolve(videoId: String): ResolvedTrack
 }
 
@@ -120,18 +164,25 @@ object YoutubeCatalog : Catalog {
         })
     }
 
-    override suspend fun search(query: String): CatalogResult = withContext(Dispatchers.IO) {
-        val extractor = service.getSearchExtractor(query)
-        extractor.fetchPage()
-        val page = SearchInfo.getInfo(extractor)
-        val tracks = page.relatedItems.filterIsInstance<StreamInfoItem>().mapNotNull { it.track() }
-        if (tracks.isEmpty() && page.errors.isNotEmpty()) throw page.errors.first()
-        CatalogResult("검색 결과", tracks)
+    override suspend fun search(query: String, channelsOnly: Boolean): CatalogResult = withContext(Dispatchers.IO) {
+        val filter = if (channelsOnly) YoutubeSearchQueryHandlerFactory.CHANNELS else YoutubeSearchQueryHandlerFactory.ALL
+        val handler = service.searchQHFactory.fromQuery(query, listOf(filter), "")
+        val info = SearchInfo.getInfo(service, handler)
+        entries(if (channelsOnly) "채널 검색 결과" else "검색 결과", info.relatedItems, info.errors)
     }
 
     override suspend fun lookup(link: YoutubeLink): CatalogResult = withContext(Dispatchers.IO) {
         when (link) {
             is YoutubeLink.Video -> CatalogResult("링크 조회", listOf(resolve(link.id).track))
+            is YoutubeLink.Channel -> {
+                val info = ChannelInfo.getInfo(service, link.url)
+                val sections = ChannelSection.entries.filter { section ->
+                    info.tabs.any { section.tab in it.contentFilters }
+                }
+                val header = ChannelHeader(info.id, info.name, info.avatars.maxByOrNull { it.width }?.url.orEmpty(), sections)
+                val first = link.section?.takeIf { it in sections } ?: sections.firstOrNull()
+                if (first == null) CatalogResult(info.name, channel = header) else channelSection(header, first)
+            }
             is YoutubeLink.Playlist -> {
                 val info = PlaylistInfo.getInfo(service, "https://www.youtube.com/playlist?list=${link.id}")
                 val tracks = info.relatedItems.mapNotNull { it.track() }.toMutableList()
@@ -144,9 +195,41 @@ object YoutubeCatalog : Catalog {
                     tracks += next.items.mapNotNull { it.track() }
                     page = next.nextPage.takeUnless { it == page || next.items.isEmpty() }
                 }
-                CatalogResult(info.name, tracks.take(100))
+                CatalogResult(info.name, tracks.take(100), isPlaylist = true)
             }
         }
+    }
+
+    override suspend fun channelSection(channel: ChannelHeader, section: ChannelSection): CatalogResult = withContext(Dispatchers.IO) {
+        require(section in channel.sections)
+        val handler = service.channelTabLHFactory.fromQuery("channel/${channel.id}", listOf(section.tab), "")
+        val info = ChannelTabInfo.getInfo(service, handler)
+        fun result(items: List<InfoItem>, page: Page?, errors: List<Throwable>): CatalogResult {
+            val more: (suspend () -> CatalogResult)? = page?.takeIf { Page.isValid(it) }?.let { cursor ->
+                {
+                    withContext(Dispatchers.IO) {
+                        val next = ChannelTabInfo.getMoreItems(service, handler, cursor)
+                        result(next.items, next.nextPage.takeUnless { it == cursor }, next.errors)
+                    }
+                }
+            }
+            return entries(section.label, items, errors).copy(channel = channel, section = section, more = more)
+        }
+        result(info.relatedItems, info.nextPage, info.errors)
+    }
+
+    private fun entries(heading: String, items: List<InfoItem>, errors: List<Throwable>): CatalogResult {
+        val tracks = items.filterIsInstance<StreamInfoItem>().mapNotNull { it.track() }.distinctBy { it.id }
+        val channels = items.filterIsInstance<ChannelInfoItem>().mapNotNull {
+            val link = YoutubeLink.fromText(it.url) as? YoutubeLink.Channel ?: return@mapNotNull null
+            CatalogChannel(link, it.name, it.thumbnails.maxByOrNull { image -> image.width }?.url.orEmpty())
+        }.distinctBy { it.link.url }
+        val playlists = items.filterIsInstance<PlaylistInfoItem>().mapNotNull {
+            val link = YoutubeLink.fromText(it.url) as? YoutubeLink.Playlist ?: return@mapNotNull null
+            CatalogPlaylist(link, it.name, it.thumbnails.maxByOrNull { image -> image.width }?.url.orEmpty(), it.streamCount)
+        }.distinctBy { it.link }
+        if (tracks.isEmpty() && channels.isEmpty() && playlists.isEmpty() && errors.isNotEmpty()) throw errors.first()
+        return CatalogResult(heading, tracks, channels, playlists)
     }
 
     override fun resolve(videoId: String): ResolvedTrack {

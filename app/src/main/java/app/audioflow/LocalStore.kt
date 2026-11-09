@@ -51,6 +51,9 @@ abstract class LibraryDao {
     @Query("UPDATE tracks SET playedAt=:at, positionMs=:position WHERE id=:id")
     abstract suspend fun updatePosition(id: String, position: Long, at: Long)
 
+    @Query("UPDATE tracks SET positionMs=:position WHERE id=:id AND playedAt>0")
+    abstract suspend fun checkpointPosition(id: String, position: Long)
+
     @Query("UPDATE tracks SET favoriteAt=CASE WHEN favoriteAt=0 THEN :now ELSE 0 END WHERE id=:id")
     abstract suspend fun flipFavorite(id: String, now: Long)
 
@@ -62,6 +65,9 @@ abstract class LibraryDao {
 
     @Query("UPDATE tracks SET playedAt=0, positionMs=0 WHERE playedAt>0")
     abstract suspend fun clearHistory()
+
+    @Query("UPDATE tracks SET playedAt=0, positionMs=0 WHERE id=:id")
+    abstract suspend fun removeHistory(id: String)
 
     @Query("SELECT * FROM playlists ORDER BY id")
     abstract fun playlists(): Flow<List<LocalPlaylist>>
@@ -102,6 +108,17 @@ abstract class LibraryDao {
     open suspend fun addToPlaylist(id: Long, track: Track) {
         remember(track)
         insertPlaylistEntry(PlaylistEntry(id, track.id, System.currentTimeMillis()))
+    }
+
+    @Transaction
+    open suspend fun importPlaylist(name: String, tracks: List<Track>) {
+        require(tracks.isNotEmpty())
+        val id = createPlaylist(LocalPlaylist(name = name))
+        val start = System.currentTimeMillis()
+        tracks.distinctBy { it.id }.forEachIndexed { index, track ->
+            remember(track)
+            insertPlaylistEntry(PlaylistEntry(id, track.id, start + index))
+        }
     }
 }
 

@@ -22,6 +22,49 @@ class CatalogTest {
         }
     }
 
+    @Test fun recognizesChannelLinksAndHandles() {
+        val id = "UCuAXFkgsw1L7xaCfnd5JJOw"
+        assertEquals(YoutubeLink.Channel("https://www.youtube.com/@RickAstleyYT"), YoutubeLink.fromText("@RickAstleyYT"))
+        assertEquals(YoutubeLink.Channel("https://www.youtube.com/channel/$id", ChannelSection.Playlists),
+            YoutubeLink.fromText("공유 https://m.youtube.com/channel/$id/playlists?si=abc"))
+        assertEquals(YoutubeLink.Channel("https://www.youtube.com/@%ED%95%9C%EA%B8%80"), YoutubeLink.fromText("@한글"))
+        assertEquals(YoutubeLink.Channel("https://www.youtube.com/user/artist"),
+            YoutubeLink.fromText("youtube.com/user/artist/featured"))
+        listOf("https://youtu.be/@RickAstleyYT", "https://youtube.com.evil.test/@RickAstleyYT",
+            "https://youtube.com/channel/UCinvalid", "https://www.youtube.com/@rick/%2E%2E/watch").forEach {
+            assertNull(it, YoutubeLink.fromText(it))
+        }
+    }
+
+    @Test fun liveAnonymousArtistChannel() = runBlocking {
+        assumeTrue(System.getenv("AUDIOFLOW_LIVE") == "1")
+        val results = YoutubeCatalog.search("Rick Astley", channelsOnly = true)
+        assertTrue(results.tracks.isEmpty())
+        val artist = results.channels.first { it.name.equals("Rick Astley", ignoreCase = true) }
+        val uploads = YoutubeCatalog.lookup(artist.link)
+        val channel = checkNotNull(uploads.channel)
+        assertEquals(artist.name, channel.name)
+        assertEquals(ChannelSection.Videos, uploads.section)
+        assertTrue(uploads.tracks.isNotEmpty())
+        assertTrue(uploads.tracks.any { it.seconds > 0 && it.thumbnail.startsWith("https://") })
+        val more = checkNotNull(uploads.more).invoke()
+        assertTrue(more.tracks.any { track -> uploads.tracks.none { it.id == track.id } })
+        val musicVideo = (uploads.tracks + more.tracks).first { track ->
+            track.title.contains("official", ignoreCase = true) && track.title.contains("video", ignoreCase = true)
+        }
+        assertEquals(musicVideo.id, YoutubeCatalog.resolve(musicVideo.id).track.id)
+        val playlists = YoutubeCatalog.lookup(YoutubeLink.fromText("https://www.youtube.com/@RickAstleyYT/playlists")!!)
+        assertEquals(channel.id, playlists.channel?.id)
+        assertEquals(ChannelSection.Playlists, playlists.section)
+        assertTrue(playlists.playlists.isNotEmpty())
+        val playlist = playlists.playlists.first { it.count > 1 }
+        val details = YoutubeCatalog.lookup(playlist.link)
+        assertTrue(details.isPlaylist && details.tracks.isNotEmpty())
+        println("channels=${results.channels.size}, channel=${channel.name}, uploads=${uploads.tracks.size}, " +
+            "more=${more.tracks.size}, playlists=${playlists.playlists.size}, playlistTracks=${details.tracks.size}, " +
+            "musicVideo=${musicVideo.title}")
+    }
+
     @Test fun liveAnonymousSearch() = runBlocking {
         assumeTrue(System.getenv("AUDIOFLOW_LIVE") == "1")
         val result = YoutubeCatalog.search("NASA Apollo 11")

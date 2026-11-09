@@ -9,6 +9,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
@@ -29,26 +30,88 @@ internal class SearchModel : ViewModel() {
         private set
     var loading by mutableStateOf(false)
         private set
+    var channelsOnly by mutableStateOf(false)
+        private set
     private var request: Job? = null
+    private var retryAction: (() -> Unit)? = null
+    private data class Previous(val result: CatalogResult?, val error: String?, val retry: (() -> Unit)?)
+    private val previous = mutableStateListOf<Previous>()
+    val canGoBack get() = previous.isNotEmpty()
 
     fun submit(text: String = query, shared: Boolean = false) {
         val input = text.trim().take(1500)
         if (input.isEmpty()) return
         query = input
+        previous.clear()
+        val onlyChannels = channelsOnly
+        load {
+            val link = YoutubeLink.fromText(input)
+            when {
+                link != null -> YoutubeCatalog.lookup(link)
+                shared || input.contains("://") || input.startsWith("youtu.be/", true) ||
+                    input.contains("youtube.com/", true) ->
+                    throw CatalogException("지원되는 YouTube 동영상, 채널 또는 공개 플레이리스트 링크를 입력해 주세요.")
+                else -> YoutubeCatalog.search(input.take(200), onlyChannels)
+            }
+        }
+    }
+
+    fun selectChannelsOnly(value: Boolean) {
+        if (channelsOnly == value) return
+        channelsOnly = value
+        if (query.isNotBlank()) submit()
+    }
+
+    fun open(link: YoutubeLink) {
+        if (loading) return
+        previous.add(Previous(result, error, retryAction))
+        load { YoutubeCatalog.lookup(link) }
+    }
+
+    fun selectSection(section: ChannelSection) {
+        val current = result ?: return
+        val channel = current.channel ?: return
+        if (section == current.section) return
+        load(CatalogResult(section.label, channel = channel, section = section)) {
+            YoutubeCatalog.channelSection(channel, section)
+        }
+    }
+
+    fun more() {
+        val current = result ?: return
+        val next = current.more ?: return
+        if (loading) return
+        load(current) {
+            val page = next()
+            current.copy(
+                tracks = (current.tracks + page.tracks).distinctBy { it.id },
+                playlists = (current.playlists + page.playlists).distinctBy { it.link },
+                more = page.more,
+            )
+        }
+    }
+
+    fun retry() { retryAction?.invoke() }
+
+    fun back() {
+        if (!canGoBack) return reset()
         request?.cancel()
-        result = null
+        val prior = previous.removeAt(previous.lastIndex)
+        result = prior.result
+        error = prior.error
+        retryAction = prior.retry
+        loading = false
+    }
+
+    private fun load(visible: CatalogResult? = null, fetch: suspend () -> CatalogResult) {
+        request?.cancel()
+        retryAction = { load(visible, fetch) }
+        result = visible
         error = null
         loading = true
         request = viewModelScope.launch {
             try {
-                val link = YoutubeLink.fromText(input)
-                result = when {
-                    link != null -> YoutubeCatalog.lookup(link)
-                    shared || input.contains("://") || input.startsWith("youtu.be/", true) ||
-                        input.contains("youtube.com/", true) ->
-                        throw CatalogException("지원되는 YouTube 동영상 또는 공개 플레이리스트 링크를 입력해 주세요.")
-                    else -> YoutubeCatalog.search(input.take(200))
-                }
+                result = fetch()
                 loading = false
             } catch (error: CancellationException) {
                 throw error
@@ -61,6 +124,8 @@ internal class SearchModel : ViewModel() {
 
     fun reset() {
         request?.cancel()
+        previous.clear()
+        retryAction = null
         query = ""
         result = null
         error = null

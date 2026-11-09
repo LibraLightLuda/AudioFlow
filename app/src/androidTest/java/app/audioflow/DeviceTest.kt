@@ -47,6 +47,19 @@ class DeviceTest {
                 assertEquals(track, dao.favorites().first().single().track)
                 assertEquals(3300L, dao.history().first().single().positionMs)
                 assertEquals(track, dao.playlistTracks(id).first().single().track)
+                dao.removeHistory(track.id)
+                dao.checkpointPosition(track.id, 5000)
+                assertTrue(dao.history().first().isEmpty())
+                assertEquals(track, dao.favorites().first().single().track)
+                assertEquals(track, dao.playlistTracks(id).first().single().track)
+                assertEquals(0L, dao.track(track.id)?.positionMs)
+                dao.played(track, 1200)
+                assertEquals(1200L, dao.history().first().single().positionMs)
+
+                val another = Track("dQw4w9WgXcQ", "Never Gonna Give You Up", "Rick Astley")
+                dao.importPlaylist("가져온 목록", listOf(another, track, another))
+                val imported = dao.playlists().first().single { it.name == "가져온 목록" }
+                assertEquals(listOf(another, track), dao.playlistTracks(imported.id).first().map { it.track })
             } finally {
                 second.close()
             }

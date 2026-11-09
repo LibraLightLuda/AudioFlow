@@ -148,16 +148,20 @@ class PlaybackService : MediaSessionService() {
             } else {
                 val same = player.currentMediaItem?.mediaId == lastHistoryId
                 if (same && player.playerError == null) recordCurrent()
+                if (player.playbackState == Player.STATE_ENDED) lastHistoryId = null
                 snapshot()
             }
         }
 
         override fun onPositionDiscontinuity(old: Player.PositionInfo, new: Player.PositionInfo, reason: Int) {
-            if (old.mediaItem != new.mediaItem || reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) {
-                val completed = reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION
+            val completed = reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION
+            val changedTrack = old.mediaItem != new.mediaItem || old.mediaItemIndex != new.mediaItemIndex
+            if (changedTrack || completed) {
                 old.mediaItem?.track()?.takeIf { it.id == lastHistoryId }?.let { record(it, if (completed) 0 else old.positionMs) }
-                lastHistoryId = null
-                if (player.isPlaying) recordCurrent()
+                if (changedTrack) {
+                    lastHistoryId = null
+                    if (player.isPlaying) recordCurrent()
+                }
             }
         }
 
@@ -204,6 +208,7 @@ class PlaybackService : MediaSessionService() {
             command.customAction == StopPlayback.customAction -> {
                 player.pause()
                 player.stop()
+                lastHistoryId = null
                 snapshot()
                 setTimer(0)
                 pauseAllPlayersAndStopSelf()
@@ -226,6 +231,7 @@ class PlaybackService : MediaSessionService() {
             app.sleepDeadline.value = 0L
             player.pause()
             player.stop()
+            lastHistoryId = null
             snapshot()
             pauseAllPlayersAndStopSelf()
         }
@@ -233,13 +239,18 @@ class PlaybackService : MediaSessionService() {
 
     private fun recordCurrent() {
         val track = player.currentMediaItem?.track() ?: return
+        val started = lastHistoryId != track.id
         lastHistoryId = track.id
-        record(track, if (player.playbackState == Player.STATE_ENDED) 0 else player.currentPosition)
+        record(track, if (player.playbackState == Player.STATE_ENDED) 0 else player.currentPosition, started)
     }
 
-    private fun record(track: Track, position: Long) {
+    private fun record(track: Track, position: Long, started: Boolean = false) {
         app.scope.launch {
-            runCatching { app.store.dao.played(track, position) }
+            runCatching {
+                val dao = app.store.dao
+                if (started) dao.played(track, position)
+                else dao.checkpointPosition(track.id, position.coerceAtLeast(0))
+            }
                 .onFailure { Log.w("AudioFlow", "Could not save playback history", it) }
         }
     }

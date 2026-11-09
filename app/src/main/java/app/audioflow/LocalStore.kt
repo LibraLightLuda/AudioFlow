@@ -5,6 +5,8 @@ import android.content.Context
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.room.*
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import java.io.IOException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -12,6 +14,17 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.*
 import org.json.JSONArray
 import org.json.JSONObject
+
+const val DEFAULT_PLAYLIST_ID = -1L
+private const val CREATE_DEFAULT_PLAYLIST =
+    "INSERT OR IGNORE INTO playlists(id, name) VALUES (-1, '기본 플레이리스트')"
+
+internal val LibraryMigration1To2 = object : Migration(1, 2) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE tracks ADD COLUMN channelUrl TEXT NOT NULL DEFAULT ''")
+        db.execSQL(CREATE_DEFAULT_PLAYLIST)
+    }
+}
 
 @Entity(tableName = "tracks", primaryKeys = ["id"])
 data class SavedTrack(
@@ -42,8 +55,8 @@ abstract class LibraryDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     abstract suspend fun insert(row: SavedTrack)
 
-    @Query("UPDATE tracks SET title=:title, channel=:channel, thumbnail=:thumbnail, seconds=:seconds WHERE id=:id")
-    abstract suspend fun refresh(id: String, title: String, channel: String, thumbnail: String, seconds: Long)
+    @Query("UPDATE tracks SET title=:title, channel=:channel, thumbnail=:thumbnail, seconds=:seconds, channelUrl=CASE WHEN :channelUrl='' THEN channelUrl ELSE :channelUrl END WHERE id=:id")
+    abstract suspend fun refresh(id: String, title: String, channel: String, thumbnail: String, seconds: Long, channelUrl: String)
 
     @Query("SELECT * FROM tracks WHERE id=:id")
     abstract suspend fun track(id: String): SavedTrack?
@@ -78,8 +91,11 @@ abstract class LibraryDao {
     @Insert
     abstract suspend fun createPlaylist(playlist: LocalPlaylist): Long
 
-    @Delete
-    abstract suspend fun deletePlaylist(playlist: LocalPlaylist)
+    @Query("DELETE FROM playlists WHERE id=:id AND id != -1")
+    abstract suspend fun deletePlaylist(id: Long)
+
+    @Query(CREATE_DEFAULT_PLAYLIST)
+    abstract suspend fun ensureDefaultPlaylist()
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     abstract suspend fun insertPlaylistEntry(entry: PlaylistEntry)
@@ -87,9 +103,25 @@ abstract class LibraryDao {
     @Query("DELETE FROM playlist_tracks WHERE playlistId=:listId AND trackId=:trackId")
     abstract suspend fun removeFromPlaylist(listId: Long, trackId: String)
 
+    @Query("DELETE FROM playlist_tracks WHERE trackId=:trackId")
+    abstract suspend fun unlinkTrack(trackId: String)
+
+    @Transaction
+    open suspend fun removeFromLibrary(trackId: String) {
+        unlinkTrack(trackId)
+        removeHistory(trackId)
+    }
+
+    @Transaction
+    open suspend fun removeDuplicates(listId: Long?, trackIds: List<String>) {
+        trackIds.forEach { id ->
+            if (listId == null) removeHistory(id) else removeFromPlaylist(listId, id)
+        }
+    }
+
     private suspend fun remember(track: Track) {
         insert(SavedTrack(track))
-        refresh(track.id, track.title, track.channel, track.thumbnail, track.seconds)
+        refresh(track.id, track.title, track.channel, track.thumbnail, track.seconds, track.channelUrl)
     }
 
     @Transaction
@@ -111,6 +143,12 @@ abstract class LibraryDao {
     }
 
     @Transaction
+    open suspend fun saveDefault(track: Track) {
+        ensureDefaultPlaylist()
+        addToPlaylist(DEFAULT_PLAYLIST_ID, track)
+    }
+
+    @Transaction
     open suspend fun importPlaylist(name: String, tracks: List<Track>) {
         require(tracks.isNotEmpty())
         val id = createPlaylist(LocalPlaylist(name = name))
@@ -122,7 +160,7 @@ abstract class LibraryDao {
     }
 }
 
-@Database(entities = [SavedTrack::class, LocalPlaylist::class, PlaylistEntry::class], version = 1, exportSchema = false)
+@Database(entities = [SavedTrack::class, LocalPlaylist::class, PlaylistEntry::class], version = 2, exportSchema = false)
 abstract class AudioFlowDatabase : RoomDatabase() {
     abstract fun library(): LibraryDao
 }
@@ -139,7 +177,13 @@ data class QueueState(
 private val Context.settings by preferencesDataStore("audioflow")
 
 class LocalStore(context: Context) {
-    val dao = Room.databaseBuilder(context, AudioFlowDatabase::class.java, "audioflow.db").build().library()
+    val dao = Room.databaseBuilder(context, AudioFlowDatabase::class.java, "audioflow.db")
+        .addMigrations(LibraryMigration1To2)
+        .addCallback(object : RoomDatabase.Callback() {
+            override fun onCreate(db: SupportSQLiteDatabase) {
+                db.execSQL(CREATE_DEFAULT_PLAYLIST)
+            }
+        }).build().library()
     private val settings = context.settings
     private val queueKey = stringPreferencesKey("queue")
     private val darkKey = booleanPreferencesKey("dark")
@@ -159,7 +203,7 @@ class LocalStore(context: Context) {
                 tracks = List(tracks.length()) { i ->
                     val item = tracks.getJSONObject(i)
                     Track(item.getString("id"), item.getString("title"), item.optString("channel"),
-                        item.optString("thumbnail"), item.optLong("seconds"))
+                        item.optString("thumbnail"), item.optLong("seconds"), item.optString("channelUrl"))
                 },
                 index = json.optInt("index"),
                 position = json.optLong("position").coerceAtLeast(0),
@@ -174,7 +218,8 @@ class LocalStore(context: Context) {
         val tracks = JSONArray()
         state.tracks.forEach { track ->
             tracks.put(JSONObject().put("id", track.id).put("title", track.title)
-                .put("channel", track.channel).put("thumbnail", track.thumbnail).put("seconds", track.seconds))
+                .put("channel", track.channel).put("thumbnail", track.thumbnail).put("seconds", track.seconds)
+                .put("channelUrl", track.channelUrl))
         }
         val raw = JSONObject().put("tracks", tracks).put("index", state.index).put("position", state.position)
             .put("speed", state.speed).put("repeat", state.repeat).put("shuffle", state.shuffle).toString()

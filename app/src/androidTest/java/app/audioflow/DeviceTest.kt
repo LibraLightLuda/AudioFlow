@@ -2,6 +2,7 @@ package app.audioflow
 
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import androidx.media3.common.C
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
@@ -60,6 +61,16 @@ class DeviceTest {
                 dao.importPlaylist("가져온 목록", listOf(another, track, another))
                 val imported = dao.playlists().first().single { it.name == "가져온 목록" }
                 assertEquals(listOf(another, track), dao.playlistTracks(imported.id).first().map { it.track })
+                dao.saveDefault(track)
+                dao.saveDefault(track)
+                assertEquals(track, dao.playlistTracks(DEFAULT_PLAYLIST_ID).first().single().track)
+                dao.deletePlaylist(DEFAULT_PLAYLIST_ID)
+                assertTrue(dao.playlists().first().any { it.id == DEFAULT_PLAYLIST_ID })
+                dao.removeFromLibrary(track.id)
+                assertTrue(dao.history().first().isEmpty())
+                assertTrue(dao.playlistTracks(DEFAULT_PLAYLIST_ID).first().isEmpty())
+                assertEquals(listOf(another), dao.playlistTracks(imported.id).first().map { it.track })
+                assertEquals(track, dao.favorites().first().single().track)
             } finally {
                 second.close()
             }
@@ -69,10 +80,11 @@ class DeviceTest {
         Unit
     }
 
-    @Test fun activityAndSessionPlayLiveYouTubeAudio() = runBlocking {
-        ActivityScenario.launch(MainActivity::class.java).use {
-            val result = YoutubeCatalog.lookup(YoutubeLink.Video("jNQXAC9IVRw"))
-            val track = result.tracks.single()
+    @Test fun sharedYouTubeVideoStartsPlaybackAndSavesToDefault() = runBlocking {
+        val id = "jNQXAC9IVRw"
+        val intent = Intent(Intent.ACTION_SEND, null, context, MainActivity::class.java)
+            .setType("text/plain").putExtra(Intent.EXTRA_TEXT, "https://youtu.be/$id")
+        ActivityScenario.launch<MainActivity>(intent).use {
             val future = withContext(Dispatchers.Main) {
                 MediaController.Builder(context, SessionToken(context, ComponentName(context, PlaybackService::class.java)))
                     .buildAsync()
@@ -80,11 +92,8 @@ class DeviceTest {
             try {
                 val controller = future.get(15, TimeUnit.SECONDS)
                 withContext(Dispatchers.Main) {
-                    controller.setMediaItem(track.mediaItem())
-                    controller.prepare()
-                    controller.play()
                     withTimeout(40_000) {
-                        while (!controller.isPlaying || controller.currentPosition < 750) {
+                        while (controller.currentMediaItem?.mediaId != id || !controller.isPlaying || controller.currentPosition < 750) {
                             controller.playerError?.let { throw it }
                             delay(100)
                         }
@@ -95,7 +104,8 @@ class DeviceTest {
                 }
                 withTimeout(10_000) {
                     val app = context as AudioFlowApp
-                    while (app.store.readQueue().tracks.firstOrNull()?.id != track.id) delay(100)
+                    app.store.dao.playlistTracks(DEFAULT_PLAYLIST_ID).first { tracks -> tracks.any { it.track.id == id } }
+                    while (app.store.readQueue().tracks.firstOrNull()?.id != id) delay(100)
                 }
             } finally {
                 withContext(Dispatchers.Main) { MediaController.releaseFuture(future) }

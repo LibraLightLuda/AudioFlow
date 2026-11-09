@@ -3,6 +3,9 @@
 package app.audioflow
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
 import androidx.activity.compose.BackHandler
@@ -28,6 +31,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -122,6 +126,7 @@ internal fun AudioFlowScreen(
     }
     val deadline by app.sleepDeadline.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
     var page by rememberSaveable { mutableStateOf(Page.Home) }
     var shelf by rememberSaveable { mutableStateOf(Shelf.Favorite) }
@@ -135,6 +140,8 @@ internal fun AudioFlowScreen(
     var playback by remember { mutableStateOf(PlaybackUi()) }
     var playRequest by remember { mutableStateOf<Job?>(null) }
     var importing by remember { mutableStateOf(false) }
+    var excludeTrack by remember { mutableStateOf<Track?>(null) }
+    var cleanup by remember { mutableStateOf<Pair<Long?, List<Track>>?>(null) }
 
     DisposableEffect(controller) {
         if (controller == null) return@DisposableEffect onDispose {}
@@ -187,7 +194,7 @@ internal fun AudioFlowScreen(
             }
         }
     }
-    fun play(tracks: List<Track>, index: Int) {
+    fun play(tracks: List<Track>, index: Int, saveSelection: Boolean = false) {
         val remote = controller ?: return toast("플레이어가 연결되는 중이에요.")
         if (index !in tracks.indices) return
         val start = index / 200 * 200
@@ -205,8 +212,39 @@ internal fun AudioFlowScreen(
             remote.setMediaItems(bounded.map { it.mediaItem() }, selected, position)
             remote.prepare()
             remote.play()
+            if (saveSelection) update { dao.saveDefault(bounded[selected]) }
         }
         playerOpen = true
+    }
+    LaunchedEffect(controller, search.sharedTrack) {
+        if (controller != null) search.sharedTrack?.let { track ->
+            search.consumeSharedTrack()
+            play(listOf(track), 0, saveSelection = true)
+        }
+    }
+    fun openYouTube(track: Track) {
+        scope.launch {
+            try {
+                val channel = YoutubeCatalog.channelLink(track)
+                val uri = Uri.parse(channel.url)
+                try {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, uri).setPackage("com.google.android.youtube"))
+                } catch (_: ActivityNotFoundException) {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: ActivityNotFoundException) {
+                toast("YouTube 링크를 열 수 있는 앱이 없어요.")
+            } catch (failure: Exception) {
+                toast(catalogError(failure))
+            }
+        }
+    }
+    fun findDuplicates(id: Long?, tracks: List<Track>) {
+        val candidates = duplicatesIn(tracks)
+        if (candidates.isEmpty()) toast("이 목록에서 중복 후보를 찾지 못했어요.")
+        else cleanup = id to candidates
     }
     fun removeHistory(track: Track) {
         update { dao.removeHistory(track.id) }
@@ -238,6 +276,8 @@ internal fun AudioFlowScreen(
             }
         },
         { playlistPicker = it },
+        ::openYouTube,
+        { excludeTrack = it },
     )
 
     MaterialTheme(colorScheme = if (dark) Night else Day) {
@@ -286,7 +326,7 @@ internal fun AudioFlowScreen(
                         playlists, playlist, entries.map { it.track }, { playlistId = it }, { createList = true },
                         { deleteList = it }, { track -> playlist?.let { list ->
                             update { dao.removeFromPlaylist(list.id, track.id) }
-                        } }, ::removeHistory, callbacks, ::play,
+                        } }, ::removeHistory, ::findDuplicates, callbacks, { tracks, index -> play(tracks, index) },
                     )
                 }
                 else -> SettingsScreen(modifier, dark, { update { store.setDark(it) } },
@@ -339,10 +379,42 @@ internal fun AudioFlowScreen(
         deleteList?.let { list ->
             ConfirmDialog("플레이리스트를 삭제할까요?", "‘${list.name}’ 목록이 삭제돼요.",
                 { deleteList = null }, {
-                    update { dao.deletePlaylist(list) }
+                    update { dao.deletePlaylist(list.id) }
                     playlistId = null
                     deleteList = null
                 })
+        }
+        excludeTrack?.let { track ->
+            ConfirmDialog("모든 목록과 기록에서 제외할까요?",
+                "‘${track.title}’을 기본·일반 플레이리스트와 재생 기록에서 제외해요.",
+                { excludeTrack = null }, {
+                    update { dao.removeFromLibrary(track.id) }
+                    excludeTrack = null
+                })
+        }
+        cleanup?.let { (listId, candidates) ->
+            AlertDialog(
+                onDismissRequest = { cleanup = null },
+                title = { Text("중복 후보 ${candidates.size}개") },
+                text = {
+                    Column {
+                        Text("이 목록에서 제목·아티스트와 재생 시간이 비슷한 항목이에요. 아래 항목을 제외하고 앞에 있던 곡을 남겨요.")
+                        Spacer(Modifier.height(8.dp))
+                        LazyColumn(Modifier.heightIn(max = 240.dp)) {
+                            itemsIndexed(candidates, key = { _, track -> track.id }) { _, track ->
+                                Text("• ${track.title}", Modifier.padding(vertical = 3.dp))
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        update { dao.removeDuplicates(listId, candidates.map { it.id }) }
+                        cleanup = null
+                    }) { Text("이 목록에서 제외") }
+                },
+                dismissButton = { TextButton(onClick = { cleanup = null }) { Text("취소") } },
+            )
         }
     }
 }
@@ -359,6 +431,8 @@ private data class TrackActions(
     val favorite: (Track) -> Unit,
     val enqueue: (Track) -> Unit,
     val playlist: (Track) -> Unit,
+    val openChannel: (Track) -> Unit,
+    val exclude: (Track) -> Unit,
 )
 
 @Composable
@@ -374,7 +448,7 @@ private fun Headline(tag: String, title: String, subtitle: String? = null) {
 @Composable
 private fun HomeScreen(
     modifier: Modifier, search: SearchModel, history: List<Track>, actions: TrackActions,
-    play: (List<Track>, Int) -> Unit, removeHistory: (Track) -> Unit,
+    play: (List<Track>, Int, Boolean) -> Unit, removeHistory: (Track) -> Unit,
     importPlaylist: (CatalogResult) -> Unit, importing: Boolean, connectionError: Boolean, connect: () -> Unit,
 ) {
     val focus = LocalFocusManager.current
@@ -407,10 +481,10 @@ private fun HomeScreen(
                     keyboardActions = KeyboardActions(onSearch = { focus.clearFocus(); search.submit() }),
                 )
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = !search.channelsOnly,
-                        onClick = { focus.clearFocus(); search.selectChannelsOnly(false) }, label = { Text("전체") })
-                    FilterChip(selected = search.channelsOnly,
-                        onClick = { focus.clearFocus(); search.selectChannelsOnly(true) }, label = { Text("채널") })
+                    SearchMode.entries.forEach { mode ->
+                        FilterChip(selected = search.mode == mode,
+                            onClick = { focus.clearFocus(); search.selectMode(mode) }, label = { Text(mode.label) })
+                    }
                 }
                 Button(onClick = { focus.clearFocus(); search.submit() },
                     enabled = search.query.isNotBlank() && !search.loading) { Text("검색 및 링크 열기") }
@@ -447,7 +521,7 @@ private fun HomeScreen(
                     }
                     if (tracks.isNotEmpty() && results != null) {
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            if (tracks.size > 1) TextButton(onClick = { play(tracks, 0) }) { Text("모두 재생") }
+                            if (tracks.size > 1) TextButton(onClick = { play(tracks, 0, true) }) { Text("모두 재생") }
                             if (results.isPlaylist) TextButton(onClick = { importPlaylist(results) }, enabled = !importing) {
                                 Text("내 플레이리스트로 저장")
                             }
@@ -461,7 +535,7 @@ private fun HomeScreen(
             }
         }
         if (results?.channels?.isNotEmpty() == true) {
-            if (!search.channelsOnly) item { SectionTitle("채널", results.channels.size) }
+            if (search.mode != SearchMode.Channels) item { SectionTitle("채널", results.channels.size) }
             itemsIndexed(results.channels, key = { _, item -> "channel-${item.link.url}" }) { _, item ->
                 ListItem(
                     headlineContent = { Text(item.name) }, supportingContent = { Text("채널 보기") },
@@ -485,8 +559,9 @@ private fun HomeScreen(
             item { SectionTitle("동영상", tracks.size) }
         }
         itemsIndexed(tracks, key = { index, track -> if (showingResults) "result-$index-${track.id}" else "history-${track.id}" }) { index, track ->
-            if (showingResults) TrackRow(track, actions, { play(tracks, index) })
-            else HistoryRow(track, actions, { play(tracks, index) }, { removeHistory(track) })
+            if (showingResults) TrackRow(track, actions, { play(tracks, index, true) })
+            else RemovableTrackRow(track, actions, { play(tracks, index, false) },
+                { removeHistory(track) }, "재생 기록에서 삭제")
         }
         if (results?.more != null) item {
             TextButton(onClick = if (search.error == null) search::more else search::retry, enabled = !search.loading) {
@@ -561,7 +636,12 @@ private fun TrackRow(
                 DropdownMenuItem(text = { Text(if (track.id in actions.favorites) "즐겨찾기에서 제거" else "즐겨찾기에 추가") },
                     onClick = { menu = false; actions.favorite(track) })
                 DropdownMenuItem(text = { Text("플레이리스트에 추가") }, onClick = { menu = false; actions.playlist(track) })
-                remove?.let { DropdownMenuItem(text = { Text(removeLabel) }, onClick = { menu = false; it() }) }
+                DropdownMenuItem(text = { Text("YouTube에서 채널 열기") }, onClick = { menu = false; actions.openChannel(track) })
+                remove?.let {
+                    DropdownMenuItem(text = { Text(removeLabel) }, onClick = { menu = false; it() })
+                    DropdownMenuItem(text = { Text("모든 목록·기록에서 제외") },
+                        onClick = { menu = false; actions.exclude(track) })
+                }
             }
         }
     }
@@ -569,7 +649,9 @@ private fun TrackRow(
 }
 
 @Composable
-private fun HistoryRow(track: Track, actions: TrackActions, play: () -> Unit, remove: () -> Unit) {
+private fun RemovableTrackRow(
+    track: Track, actions: TrackActions, play: () -> Unit, remove: () -> Unit, removeLabel: String,
+) {
     val state = rememberSwipeToDismissBoxState(positionalThreshold = { it * 0.45f })
     LaunchedEffect(state.settledValue) {
         if (state.settledValue == SwipeToDismissBoxValue.EndToStart) {
@@ -590,7 +672,7 @@ private fun HistoryRow(track: Track, actions: TrackActions, play: () -> Unit, re
         },
     ) {
         Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
-            TrackRow(track, actions, play, remove, "재생 기록에서 삭제")
+            TrackRow(track, actions, play, remove, removeLabel)
         }
     }
 }
@@ -600,7 +682,8 @@ private fun LibraryScreen(
     modifier: Modifier, shelf: Shelf, selectShelf: (Shelf) -> Unit, favorites: List<Track>,
     history: List<Track>, lists: List<LocalPlaylist>, active: LocalPlaylist?, entries: List<Track>,
     open: (Long?) -> Unit, create: () -> Unit, delete: (LocalPlaylist) -> Unit, remove: (Track) -> Unit,
-    removeHistory: (Track) -> Unit, actions: TrackActions, play: (List<Track>, Int) -> Unit,
+    removeHistory: (Track) -> Unit, findDuplicates: (Long?, List<Track>) -> Unit,
+    actions: TrackActions, play: (List<Track>, Int) -> Unit,
 ) {
     val tracks = if (active != null) entries else when (shelf) {
         Shelf.Favorite -> favorites
@@ -617,9 +700,10 @@ private fun LibraryScreen(
             } else {
                 TextButton(onClick = { open(null) }) { Text("목록으로 돌아가기") }
                 SectionTitle(active.name, entries.size)
-                Row {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     TextButton(enabled = entries.isNotEmpty(), onClick = { play(entries, 0) }) { Text("모두 재생") }
-                    TextButton(onClick = { delete(active) }) { Text("목록 삭제") }
+                    TextButton(enabled = entries.size > 1, onClick = { findDuplicates(active.id, entries) }) { Text("중복 정리") }
+                    if (active.id != DEFAULT_PLAYLIST_ID) TextButton(onClick = { delete(active) }) { Text("목록 삭제") }
                 }
             }
         }
@@ -629,19 +713,24 @@ private fun LibraryScreen(
                 if (lists.isEmpty()) EmptyState("저장된 플레이리스트가 없어요.")
             }
             itemsIndexed(lists, key = { _, list -> list.id }) { _, list ->
-                ListItem(headlineContent = { Text(list.name) }, leadingContent = { Icon(Icons.AutoMirrored.Filled.List, null) },
+                ListItem(headlineContent = { Text(list.name) },
+                    supportingContent = if (list.id == DEFAULT_PLAYLIST_ID) { { Text("검색하거나 공유해서 재생한 곡이 자동으로 추가돼요.") } } else null,
+                    leadingContent = { Icon(Icons.AutoMirrored.Filled.List, null) },
                     modifier = Modifier.clickable { open(list.id) })
             }
         } else {
             if (tracks.isEmpty()) item { EmptyState("아직 저장된 트랙이 없어요.") }
             if (shelf == Shelf.History && active == null && tracks.isNotEmpty()) item {
+                TextButton(enabled = tracks.size > 1, onClick = { findDuplicates(null, tracks) }) { Text("중복 정리") }
                 Text("항목을 왼쪽으로 밀거나 옵션에서 기록을 지울 수 있어요.",
                     style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
             }
             itemsIndexed(tracks, key = { _, track -> track.id }) { index, track ->
                 if (active == null && shelf == Shelf.History) {
-                    HistoryRow(track, actions, { play(tracks, index) }, { removeHistory(track) })
-                } else TrackRow(track, actions, { play(tracks, index) }, if (active == null) null else { { remove(track) } })
+                    RemovableTrackRow(track, actions, { play(tracks, index) }, { removeHistory(track) }, "재생 기록에서 삭제")
+                } else if (active != null) {
+                    RemovableTrackRow(track, actions, { play(tracks, index) }, { remove(track) }, "이 목록에서 제외")
+                } else TrackRow(track, actions, { play(tracks, index) })
             }
         }
     }
@@ -759,6 +848,7 @@ private fun PlayerScreen(
                     TextButton(onClick = { controller?.seekToNextMediaItem() }, enabled = state.hasNext) { Text("다음") }
                 }
                 PlaybackOptions(controller, state, deadline)
+                CaptionPanel(current.id, state.position)
                 TextButton(onClick = { controller?.sendCustomCommand(StopPlayback, Bundle.EMPTY) },
                     enabled = controller != null) { Text("재생 종료") }
             }

@@ -38,7 +38,7 @@ class CatalogTest {
 
     @Test fun liveAnonymousArtistChannel() = runBlocking {
         assumeTrue(System.getenv("AUDIOFLOW_LIVE") == "1")
-        val results = YoutubeCatalog.search("Rick Astley", channelsOnly = true)
+        val results = YoutubeCatalog.search("Rick Astley", SearchMode.Channels)
         assertTrue(results.tracks.isEmpty())
         val artist = results.channels.first { it.name.equals("Rick Astley", ignoreCase = true) }
         val uploads = YoutubeCatalog.lookup(artist.link)
@@ -63,6 +63,32 @@ class CatalogTest {
         println("channels=${results.channels.size}, channel=${channel.name}, uploads=${uploads.tracks.size}, " +
             "more=${more.tracks.size}, playlists=${playlists.playlists.size}, playlistTracks=${details.tracks.size}, " +
             "musicVideo=${musicVideo.title}")
+    }
+
+    @Test fun promotesMusicAndFlagsOnlyCloseDuplicates() {
+        val audio = Track("one", "Never Gonna Give You Up", "Rick Astley - Topic", seconds = 213)
+        val cover = Track("two", "Never Gonna Give You Up (Cover)", "Rick Astley", seconds = 213)
+        val official = Track("three", "Rick Astley - Never Gonna Give You Up (Official Music Video)", "Rick Astley", seconds = 215)
+        val live = Track("four", "Never Gonna Give You Up (Live)", "Rick Astley", seconds = 215)
+        val different = Track("five", audio.title, "Another Artist", seconds = 215)
+        assertEquals(listOf(official, audio, cover), rankMusic(listOf(cover, audio, official, official)))
+        assertEquals(listOf(official), duplicatesIn(listOf(audio, cover, official, live, different)))
+    }
+
+    @Test fun liveMusicSearchAndChannelLink() = runBlocking {
+        assumeTrue(System.getenv("AUDIOFLOW_LIVE") == "1")
+        val result = YoutubeCatalog.search("Rick Astley Never Gonna Give You Up", SearchMode.Music)
+        val top = result.tracks.take(8)
+        println("music top=${top.map { it.id + " " + it.title }}")
+        assertTrue(top.first().title.contains("Never Gonna Give You Up", ignoreCase = true))
+        val official = top.first { it.id == "dQw4w9WgXcQ" }
+        val channel = YoutubeCatalog.channelLink(official)
+        assertTrue(channel.url.startsWith("https://www.youtube.com/"))
+        assertEquals(result.tracks.size, result.tracks.distinctBy { it.id }.size)
+        println("music=${result.tracks.take(4).map { it.title }}, channel=${channel.url}")
+        val captions = YoutubeCatalog.captions(official.id)
+        if (captions != null) assertTrue(captions.bytes.toString(Charsets.UTF_8).removePrefix("\uFEFF").startsWith("WEBVTT"))
+        println("music captions=${captions?.language ?: "unavailable"}")
     }
 
     @Test fun liveAnonymousSearch() = runBlocking {

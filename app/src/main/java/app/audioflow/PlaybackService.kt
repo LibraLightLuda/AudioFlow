@@ -9,9 +9,17 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
 import androidx.media3.common.*
+import androidx.media3.database.StandaloneDatabaseProvider
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
 import androidx.media3.datasource.ResolvingDataSource
+import androidx.media3.datasource.cache.CacheDataSink
+import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
+import androidx.media3.datasource.cache.SimpleCache
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
@@ -22,29 +30,42 @@ import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import com.google.common.util.concurrent.Futures
 import java.io.IOException
+import java.io.EOFException
+import java.io.File
+import java.net.SocketException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import java.security.MessageDigest
+import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.*
 
 internal val StopPlayback = SessionCommand("app.audioflow.STOP", Bundle.EMPTY)
 internal val SleepTimer = SessionCommand("app.audioflow.TIMER", Bundle.EMPTY)
+private const val CHANNEL_URL = "app.audioflow.channelUrl"
+internal const val STREAM_CACHE_BYTES = 24L * 1024 * 1024
+internal const val STREAM_BUFFER_TARGET_BYTES = 8 * 1024 * 1024
 
 internal fun Track.mediaItem(): MediaItem = MediaItem.Builder().setMediaId(id)
     .setUri("audioflow://video/$id")
     .setMediaMetadata(MediaMetadata.Builder().setTitle(title).setArtist(channel)
         .setArtworkUri(thumbnail.takeIf { it.startsWith("https://") }?.let(Uri::parse))
         .setDurationMs((seconds * 1000).takeIf { it > 0 })
+        .setExtras(Bundle().apply { putString(CHANNEL_URL, channelUrl) })
         .setIsPlayable(true).build())
     .build()
 
 internal fun MediaItem.track() = Track(
     mediaId, mediaMetadata.title?.toString() ?: mediaId, mediaMetadata.artist?.toString().orEmpty(),
     mediaMetadata.artworkUri?.toString().orEmpty(), (mediaMetadata.durationMs ?: 0) / 1000,
+    mediaMetadata.extras?.getString(CHANNEL_URL).orEmpty(),
 )
 
 class PlaybackService : MediaSessionService() {
     private val app get() = application as AudioFlowApp
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val resolved = ConcurrentHashMap<String, Pair<String, Long>>()
+    private val resolved = ConcurrentHashMap<String, Pair<ResolvedTrack, Long>>()
+    private var streamCache: SimpleCache? = null
     private lateinit var player: ExoPlayer
     private lateinit var session: MediaSession
     private var initialized = false
@@ -57,33 +78,73 @@ class PlaybackService : MediaSessionService() {
         super.onCreate()
         val http = DefaultHttpDataSource.Factory().setUserAgent(BROWSER_AGENT)
             .setConnectTimeoutMs(9_000).setReadTimeoutMs(12_000)
-        val source = ResolvingDataSource.Factory(http) { spec ->
+        streamCache = runCatching {
+            SimpleCache(File(cacheDir, "stream-v1"), LeastRecentlyUsedCacheEvictor(STREAM_CACHE_BYTES),
+                StandaloneDatabaseProvider(this))
+        }.onFailure { Log.w("AudioFlow", "Stream cache unavailable", it) }.getOrNull()
+        val upstream = streamCache?.let { cache ->
+            CacheDataSource.Factory().setCache(cache)
+                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+                .setCacheWriteDataSinkFactory(CacheDataSink.Factory().setCache(cache).setFragmentSize(2L * 1024 * 1024))
+                .setUpstreamDataSourceFactory {
+                    val network = http.createDataSource()
+                    object : DataSource by network {
+                        private var requestUri: Uri? = null
+                        override fun open(dataSpec: DataSpec): Long {
+                            requestUri = dataSpec.uri
+                            return network.open(dataSpec)
+                        }
+                        // Signed CDN redirects must not be stored in the cache index.
+                        override fun getUri(): Uri? = requestUri
+                    }
+                }
+        } ?: http
+        val source = ResolvingDataSource.Factory(upstream) { spec ->
             val id = spec.uri.lastPathSegment.orEmpty()
             if (spec.uri.scheme != "audioflow" || spec.uri.host != "video" || !YoutubeLink.isVideoId(id)) {
                 throw IOException("Invalid media item")
             }
             val now = SystemClock.elapsedRealtime()
-            val url = resolved[id]?.takeIf { it.second > now }?.first ?: try {
-                YoutubeCatalog.resolve(id).url.also {
+            val stream = resolved[id]?.takeIf { it.second > now }?.first ?: try {
+                YoutubeCatalog.resolve(id).also {
                     if (resolved.size >= 16) resolved.clear()
                     resolved[id] = it to (now + 10 * 60_000L)
                 }
             } catch (error: Exception) {
                 throw IOException("YouTube stream lookup failed", error)
             }
-            spec.withUri(Uri.parse(url))
+            val uri = Uri.parse(stream.url)
+            val version = uri.getQueryParameter("lmt")
+            val size = uri.getQueryParameter("clen")
+            val identity = if (!version.isNullOrBlank() && !size.isNullOrBlank()) "$version:$size"
+            else Base64.getUrlEncoder().withoutPadding().encodeToString(
+                MessageDigest.getInstance("SHA-256").digest(stream.url.toByteArray(Charsets.UTF_8)),
+            )
+            spec.buildUpon().setUri(uri).setKey("$id:${stream.formatKey}:$identity")
+                .setFlags(spec.flags or DataSpec.FLAG_ALLOW_CACHE_FRAGMENTATION).build()
         }
         val media = ProgressiveMediaSource.Factory(source)
-            .setLoadErrorHandlingPolicy(object : DefaultLoadErrorHandlingPolicy(1) {
+            .setContinueLoadingCheckIntervalBytes(64 * 1024)
+            .setLoadErrorHandlingPolicy(object : DefaultLoadErrorHandlingPolicy(4) {
                 override fun getRetryDelayMsFor(info: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
-                    val error = info.exception
-                    if (error is InvalidResponseCodeException || info.errorCount > 1 || error.cause != null) {
-                        return C.TIME_UNSET
+                    val causes = generateSequence<Throwable>(info.exception) { it.cause }.take(12).toList()
+                    val status = causes.filterIsInstance<InvalidResponseCodeException>().firstOrNull()?.responseCode
+                    val retryable = when (status) {
+                        null -> causes.any {
+                            it is SocketTimeoutException || it is SocketException || it is UnknownHostException || it is EOFException
+                        }
+                        408, 500, 502, 503, 504 -> true
+                        else -> false
                     }
-                    return super.getRetryDelayMsFor(info)
+                    return if (retryable && info.errorCount in 1..4) 750L shl (info.errorCount - 1) else C.TIME_UNSET
                 }
             })
         player = ExoPlayer.Builder(this).setMediaSourceFactory(media)
+            .setLoadControl(DefaultLoadControl.Builder()
+                .setTargetBufferBytes(STREAM_BUFFER_TARGET_BYTES)
+                .setBufferDurationsMs(30_000, 65_000, 1_500, 5_000)
+                .setPrioritizeTimeOverSizeThresholds(false)
+                .build())
             .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
                 .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
             .setHandleAudioBecomingNoisy(true)
@@ -279,6 +340,7 @@ class PlaybackService : MediaSessionService() {
         player.removeListener(listener)
         session.release()
         player.release()
+        streamCache?.release()
         super.onDestroy()
     }
 }

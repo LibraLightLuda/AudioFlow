@@ -30,7 +30,9 @@ internal class SearchModel : ViewModel() {
         private set
     var loading by mutableStateOf(false)
         private set
-    var channelsOnly by mutableStateOf(false)
+    var mode by mutableStateOf(SearchMode.Music)
+        private set
+    var sharedTrack by mutableStateOf<Track?>(null)
         private set
     private var request: Job? = null
     private var retryAction: (() -> Unit)? = null
@@ -43,24 +45,27 @@ internal class SearchModel : ViewModel() {
         if (input.isEmpty()) return
         query = input
         previous.clear()
-        val onlyChannels = channelsOnly
-        load {
-            val link = YoutubeLink.fromText(input)
+        sharedTrack = null
+        val searchMode = mode
+        val link = YoutubeLink.fromText(input)
+        load(autoPlayShare = shared && link is YoutubeLink.Video) {
             when {
                 link != null -> YoutubeCatalog.lookup(link)
                 shared || input.contains("://") || input.startsWith("youtu.be/", true) ||
                     input.contains("youtube.com/", true) ->
                     throw CatalogException("지원되는 YouTube 동영상, 채널 또는 공개 플레이리스트 링크를 입력해 주세요.")
-                else -> YoutubeCatalog.search(input.take(200), onlyChannels)
+                else -> YoutubeCatalog.search(input.take(200), searchMode)
             }
         }
     }
 
-    fun selectChannelsOnly(value: Boolean) {
-        if (channelsOnly == value) return
-        channelsOnly = value
+    fun selectMode(value: SearchMode) {
+        if (mode == value) return
+        mode = value
         if (query.isNotBlank()) submit()
     }
+
+    fun consumeSharedTrack() { sharedTrack = null }
 
     fun open(link: YoutubeLink) {
         if (loading) return
@@ -103,15 +108,17 @@ internal class SearchModel : ViewModel() {
         loading = false
     }
 
-    private fun load(visible: CatalogResult? = null, fetch: suspend () -> CatalogResult) {
+    private fun load(visible: CatalogResult? = null, autoPlayShare: Boolean = false, fetch: suspend () -> CatalogResult) {
         request?.cancel()
-        retryAction = { load(visible, fetch) }
+        retryAction = { load(visible, autoPlayShare, fetch) }
         result = visible
         error = null
         loading = true
         request = viewModelScope.launch {
             try {
-                result = fetch()
+                val loaded = fetch()
+                result = loaded
+                if (autoPlayShare) sharedTrack = loaded.tracks.singleOrNull()
                 loading = false
             } catch (error: CancellationException) {
                 throw error
@@ -126,6 +133,7 @@ internal class SearchModel : ViewModel() {
         request?.cancel()
         previous.clear()
         retryAction = null
+        sharedTrack = null
         query = ""
         result = null
         error = null

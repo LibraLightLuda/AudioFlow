@@ -1155,6 +1155,8 @@ private fun SettingsScreen(
             ListItem(headlineContent = { Text("재생 기록 지우기") },
                 supportingContent = { Text("최근 재생과 트랙별 재생 위치를 삭제해요.") },
                 modifier = Modifier.clickable(onClick = clearHistory))
+            SectionTitle("앱 업데이트", 0)
+            UpdateControls()
         }
     }
 }

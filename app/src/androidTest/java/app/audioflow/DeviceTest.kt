@@ -28,6 +28,24 @@ import org.junit.runner.RunWith
 class DeviceTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
 
+    @Test fun updateMetadataRequiresNewStableReleaseAndOfficialAsset() {
+        val installed = checkNotNull(ReleaseVersion.parse("1.9.0"))
+        val newer = """
+            {"tag_name":"v1.10.0","draft":false,"prerelease":false,"assets":[{
+            "name":"AudioFlow-1.10.0.apk","state":"uploaded","size":512,
+            "digest":"sha256:${"a".repeat(64)}",
+            "browser_download_url":"$RELEASE_REPOSITORY/releases/download/v1.10.0/AudioFlow-1.10.0.apk"
+            }]}
+        """.trimIndent()
+        assertEquals("1.10.0", parseLatestUpdate(newer, installed)?.version.toString())
+        assertEquals(null, parseLatestUpdate(newer, checkNotNull(ReleaseVersion.parse("1.10.0"))))
+        listOf(newer.replace("prerelease\":false", "prerelease\":true"),
+            newer.replace("$RELEASE_REPOSITORY/", "https://github.com/other/other/"),
+            newer.replace("sha256:", "unknown:"), newer.replace("\"size\":512", "\"size\":0")).forEach {
+            assertTrue(runCatching { parseLatestUpdate(it, installed) }.isFailure)
+        }
+    }
+
     @Test fun backupRoundTripMergesWithoutReplacingExistingLibrary() = runBlocking {
         val track = Track("jNQXAC9IVRw", "원래 제목", "jawed", seconds = 19)
         val other = Track("dQw4w9WgXcQ", "Never Gonna Give You Up", "Rick Astley")

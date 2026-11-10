@@ -123,6 +123,7 @@ data class CatalogResult(
     val section: ChannelSection? = null,
     val isPlaylist: Boolean = false,
     val more: (suspend () -> CatalogResult)? = null,
+    val shortIds: Set<String> = emptySet(),
 )
 data class ResolvedTrack(val track: Track, val url: String, val audioOnly: Boolean, val formatKey: String)
 data class Captions(val language: String, val bytes: ByteArray)
@@ -140,6 +141,7 @@ interface Catalog {
 
 object YoutubeCatalog : Catalog {
     private val service = ServiceList.YouTube
+    private val streams = LinkedHashMap<String, Pair<ResolvedTrack, Long>>(16, 0.75f, true)
 
     init {
         NewPipe.init(object : Downloader() {
@@ -162,25 +164,28 @@ object YoutubeCatalog : Catalog {
             SearchMode.All -> searchItems(query, YoutubeSearchQueryHandlerFactory.ALL, "검색 결과")
             SearchMode.Channels -> searchItems(query, YoutubeSearchQueryHandlerFactory.CHANNELS, "채널 검색 결과")
             SearchMode.Music -> {
-                val tracks = coroutineScope {
-                    val videos = async { musicTracks(query, YoutubeSearchQueryHandlerFactory.MUSIC_VIDEOS) }
-                    val songs = async { musicTracks(query, YoutubeSearchQueryHandlerFactory.MUSIC_SONGS) }
+                coroutineScope {
+                    val videos = async { musicResults(query, YoutubeSearchQueryHandlerFactory.MUSIC_VIDEOS) }
+                    val songs = async { musicResults(query, YoutubeSearchQueryHandlerFactory.MUSIC_SONGS) }
                     val web = async {
                         try {
-                            Result.success(searchItems(query, YoutubeSearchQueryHandlerFactory.VIDEOS, "노래 검색 결과").tracks)
+                            Result.success(searchItems(query, YoutubeSearchQueryHandlerFactory.VIDEOS, "노래 검색 결과"))
                         } catch (cancelled: CancellationException) {
                             throw cancelled
                         } catch (failure: Exception) {
                             Result.failure(failure)
                         }
                     }
-                    val sources = videos.await() + songs.await()
+                    val music = listOfNotNull(videos.await(), songs.await())
+                    val sources = music.flatMap { it.tracks }
                     val ordinary = web.await()
-                    val candidates = ordinary.getOrDefault(emptyList()) + sources
+                    val regular = ordinary.getOrNull()
+                    val candidates = regular?.tracks.orEmpty() + sources
                     if (candidates.isEmpty()) ordinary.getOrThrow()
-                    else rankMusic(candidates, query, sources.mapTo(hashSetOf()) { it.id })
+                    else CatalogResult("노래 검색 결과",
+                        rankMusic(candidates, query, sources.mapTo(hashSetOf()) { it.id }),
+                        shortIds = (music + listOfNotNull(regular)).flatMap { it.shortIds }.toSet())
                 }
-                CatalogResult("노래 검색 결과", tracks)
             }
         }
     }
@@ -191,12 +196,12 @@ object YoutubeCatalog : Catalog {
         return entries(heading, info.relatedItems, info.errors)
     }
 
-    private fun musicTracks(query: String, filter: String): List<Track> = try {
-        searchItems(query, filter, "노래 검색 결과").tracks
+    private fun musicResults(query: String, filter: String): CatalogResult? = try {
+        searchItems(query, filter, "노래 검색 결과")
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (_: Exception) {
-        emptyList()
+        null
     }
 
     override suspend fun lookup(link: YoutubeLink): CatalogResult = withContext(Dispatchers.IO) {
@@ -247,7 +252,11 @@ object YoutubeCatalog : Catalog {
     }
 
     private fun entries(heading: String, items: List<InfoItem>, errors: List<Throwable>): CatalogResult {
-        val tracks = items.filterIsInstance<StreamInfoItem>().mapNotNull { it.track() }.distinctBy { it.id }
+        val videos = items.filterIsInstance<StreamInfoItem>()
+        val tracks = videos.mapNotNull { it.track() }.distinctBy { it.id }
+        val shorts = videos.filter { it.isShortFormContent }.mapNotNullTo(hashSetOf()) {
+            (YoutubeLink.fromText(it.url) as? YoutubeLink.Video)?.id
+        }
         val channels = items.filterIsInstance<ChannelInfoItem>().mapNotNull {
             val link = YoutubeLink.fromText(it.url) as? YoutubeLink.Channel ?: return@mapNotNull null
             CatalogChannel(link, it.name, it.thumbnails.maxByOrNull { image -> image.width }?.url.orEmpty())
@@ -257,7 +266,7 @@ object YoutubeCatalog : Catalog {
             CatalogPlaylist(link, it.name, it.thumbnails.maxByOrNull { image -> image.width }?.url.orEmpty(), it.streamCount)
         }.distinctBy { it.link }
         if (tracks.isEmpty() && channels.isEmpty() && playlists.isEmpty() && errors.isNotEmpty()) throw errors.first()
-        return CatalogResult(heading, tracks, channels, playlists)
+        return CatalogResult(heading, tracks, channels, playlists, shortIds = shorts)
     }
 
     private fun video(videoId: String): org.schabi.newpipe.extractor.stream.StreamExtractor {
@@ -293,6 +302,9 @@ object YoutubeCatalog : Catalog {
     }
 
     override fun resolve(videoId: String): ResolvedTrack {
+        synchronized(streams) {
+            streams[videoId]?.takeIf { it.second > System.currentTimeMillis() }?.let { return it.first }
+        }
         val extractor = video(videoId)
         if (extractor.ageLimit > 0) throw CatalogException("연령 확인이 필요한 콘텐츠는 재생할 수 없어요.")
         val availability = extractor.contentAvailability
@@ -310,8 +322,19 @@ object YoutubeCatalog : Catalog {
         val track = Track(videoId, extractor.name, extractor.uploaderName,
             extractor.thumbnails.maxByOrNull { it.width }?.url.orEmpty(), extractor.length,
             (YoutubeLink.fromText(extractor.uploaderUrl) as? YoutubeLink.Channel)?.url.orEmpty())
-        return ResolvedTrack(track, stream.content, audio != null, "${stream.id}:${audio?.audioTrackId.orEmpty()}")
+        val resolved = ResolvedTrack(track, stream.content, audio != null, "${stream.id}:${audio?.audioTrackId.orEmpty()}")
+        val now = System.currentTimeMillis()
+        val expires = okhttp3.HttpUrl.Companion.run { resolved.url.toHttpUrlOrNull() }
+            ?.queryParameter("expire")?.toLongOrNull()?.takeIf { it in 1..(Long.MAX_VALUE / 1000) }
+            ?.let { it * 1000 - 30_000 }
+        synchronized(streams) {
+            streams[videoId] = resolved to minOf(now + 600_000, expires ?: Long.MAX_VALUE)
+            if (streams.size > 16) streams.remove(streams.keys.first())
+        }
+        return resolved
     }
+
+    internal fun forgetStream(id: String) { synchronized(streams) { streams.remove(id) } }
 
     private fun StreamInfoItem.track(): Track? {
         val id = (YoutubeLink.fromText(url) as? YoutubeLink.Video)?.id ?: return null
@@ -327,6 +350,15 @@ object YoutubeCatalog : Catalog {
 
 private val musicLabel = Regex("official\\s+(music\\s+)?(video|audio)|뮤직\\s*비디오|공식\\s*(영상|음원)|\\bM/?V\\b|lyric\\s+video", RegexOption.IGNORE_CASE)
 private val secondaryLabel = Regex("reaction|karaoke|tutorial|instrumental|\\b(cover|remix|ringtone)\\b|리액션|노래방|커버|가사해석|벨소리|리믹스", RegexOption.IGNORE_CASE)
+private val officialLabel = Regex("\\bofficial\\s+(?:(?:music|lyric)\\s+)?(?:video|audio)\\b|공식\\s*(뮤직\\s*비디오|영상|음원)", RegexOption.IGNORE_CASE)
+
+internal fun filteredSearchTracks(result: CatalogResult, officialFirst: Boolean, hideShorts: Boolean): List<Track> {
+    val tracks = if (hideShorts) result.tracks.filterNot { it.id in result.shortIds } else result.tracks
+    return if (!officialFirst) tracks else tracks.sortedByDescending {
+        !secondaryLabel.containsMatchIn(it.title) && (officialLabel.containsMatchIn(it.title) ||
+            it.channel.endsWith(" - Topic", true) || it.channel.endsWith("VEVO", true))
+    }
+}
 
 internal fun rankMusic(tracks: List<Track>, query: String = "", musicIds: Set<String> = emptySet()): List<Track> {
     val words = normalizeTrackText(query).split(Regex("[^\\p{L}\\p{N}]+")).filter { it.length > 1 }.toSet()

@@ -28,6 +28,35 @@ import org.junit.runner.RunWith
 class DeviceTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
 
+    @Test fun backupRoundTripMergesWithoutReplacingExistingLibrary() = runBlocking {
+        val track = Track("jNQXAC9IVRw", "원래 제목", "jawed", seconds = 19)
+        val other = Track("dQw4w9WgXcQ", "Never Gonna Give You Up", "Rick Astley")
+        val database = Room.inMemoryDatabaseBuilder(context, AudioFlowDatabase::class.java).build()
+        try {
+            val dao = database.library()
+            dao.toggleFavorite(track)
+            dao.saveDefault(track)
+            val backup = LibraryBackup(listOf(track.copy(title = "다른 제목"), other), listOf(
+                BackupPlaylist("기본 플레이리스트", true, listOf(track, other)),
+                BackupPlaylist("내 목록", false, listOf(other, track)),
+            ))
+            val encoded = backup.encode()
+            val imported = decodeBackup(encoded)
+            val result = dao.mergeBackup(imported)
+            assertEquals(1, result.newPlaylists)
+            assertEquals(4, result.newTracks)
+            assertEquals(track.title, dao.track(track.id)?.track?.title)
+            assertEquals(listOf(track.id, other.id), dao.playlistTracks(DEFAULT_PLAYLIST_ID).first().map { it.track.id })
+            val list = dao.playlists().first().single { it.name == "내 목록" }
+            assertEquals(listOf(other.id, track.id), dao.playlistTracks(list.id).first().map { it.track.id })
+            assertFalse(dao.mergeBackup(imported).hasChanges)
+            assertTrue(runCatching { decodeBackup("""{"format":"audioflow-library","version":2}""".toByteArray()) }.isFailure)
+        } finally {
+            database.close()
+        }
+        Unit
+    }
+
     @Test fun libraryPersistsAcrossDatabaseReopen() = runBlocking {
         val name = "audioflow-test-${UUID.randomUUID()}.db"
         val track = Track("jNQXAC9IVRw", "Me at the zoo", "jawed", seconds = 19)
@@ -100,6 +129,19 @@ class DeviceTest {
                     }
                     assertTrue(controller.currentTracks.isTypeSelected(C.TRACK_TYPE_AUDIO))
                     assertFalse(controller.currentTracks.isTypeSelected(C.TRACK_TYPE_VIDEO))
+                    val other = Track("dQw4w9WgXcQ", "Never Gonna Give You Up", "Rick Astley")
+                    val position = controller.currentPosition
+                    controller.addMediaItem(controller.currentMediaItemIndex + 1, other.mediaItem())
+                    withTimeout(5_000) {
+                        while (controller.mediaItemCount < 2) delay(50)
+                    }
+                    controller.moveMediaItem(1, 0)
+                    withTimeout(5_000) {
+                        while (controller.currentMediaItemIndex != 1) delay(50)
+                    }
+                    assertEquals(id, controller.currentMediaItem?.mediaId)
+                    assertTrue(controller.currentPosition >= position - 250)
+                    controller.removeMediaItem(0)
                     controller.pause()
                 }
                 withTimeout(10_000) {

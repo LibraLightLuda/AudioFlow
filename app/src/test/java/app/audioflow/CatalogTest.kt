@@ -148,6 +148,7 @@ class CatalogTest {
         val link = YoutubeLink.fromText("https://youtu.be/$id?si=test")!!
         val lookup = YoutubeCatalog.lookup(link).tracks.single()
         val info = YoutubeCatalog.resolve(id)
+        assertSame(info, YoutubeCatalog.resolve(id))
         assertEquals(lookup.id, info.track.id)
         assertEquals(lookup.title, info.track.title)
         assertTrue(info.track.seconds > 0)

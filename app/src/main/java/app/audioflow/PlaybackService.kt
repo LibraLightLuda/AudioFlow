@@ -4,6 +4,9 @@ package app.audioflow
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
@@ -39,14 +42,15 @@ import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.security.MessageDigest
 import java.util.Base64
-import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.*
 
 internal val StopPlayback = SessionCommand("app.audioflow.STOP", Bundle.EMPTY)
 internal val SleepTimer = SessionCommand("app.audioflow.TIMER", Bundle.EMPTY)
+internal val RetryPlayback = SessionCommand("app.audioflow.RETRY", Bundle.EMPTY)
 private const val CHANNEL_URL = "app.audioflow.channelUrl"
 internal const val STREAM_CACHE_BYTES = 24L * 1024 * 1024
 internal const val STREAM_BUFFER_TARGET_BYTES = 8 * 1024 * 1024
+private val NEXT_TRACK_PRELOAD = ExoPlayer.PreloadConfiguration(3_000_000)
 
 internal fun privateArtworkLoader(context: android.content.Context) = CacheBitmapLoader(
     DataSourceBitmapLoader.Builder(context).setDataSourceFactory(OkHttpDataSource.Factory(PrivateNetwork.images))
@@ -71,7 +75,6 @@ internal fun MediaItem.track() = Track(
 class PlaybackService : MediaSessionService() {
     private val app get() = application as AudioFlowApp
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val resolved = ConcurrentHashMap<String, Pair<ResolvedTrack, Long>>()
     private var streamCache: SimpleCache? = null
     private lateinit var player: ExoPlayer
     private lateinit var session: MediaSession
@@ -80,6 +83,21 @@ class PlaybackService : MediaSessionService() {
     private var lastHistoryId: String? = null
     private var timerJob: Job? = null
     private var checkpoints: Job? = null
+    private var autoJob: Job? = null
+    private var autoplayEnabled = false
+    private var preloadEnabled = false
+    private var networkCallbackRegistered = false
+    private var savedState: QueueState? = null
+    private var queueTracks: List<Track>? = null
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+            scope.launch { updatePreload() }
+        }
+
+        override fun onLost(network: Network) {
+            scope.launch { updatePreload() }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -110,12 +128,8 @@ class PlaybackService : MediaSessionService() {
             if (spec.uri.scheme != "audioflow" || spec.uri.host != "video" || !YoutubeLink.isVideoId(id)) {
                 throw IOException("Invalid media item")
             }
-            val now = SystemClock.elapsedRealtime()
-            val stream = resolved[id]?.takeIf { it.second > now }?.first ?: try {
-                YoutubeCatalog.resolve(id).also {
-                    if (resolved.size >= 16) resolved.clear()
-                    resolved[id] = it to (now + 10 * 60_000L)
-                }
+            val stream = try {
+                YoutubeCatalog.resolve(id)
             } catch (error: Exception) {
                 throw IOException("YouTube stream lookup failed", error)
             }
@@ -179,19 +193,44 @@ class PlaybackService : MediaSessionService() {
             }
             initialized = true
         }
+        scope.launch { app.store.autoplay.collect {
+            autoplayEnabled = it
+            if (!it) autoJob?.cancel()
+        } }
+        scope.launch { app.store.preload.collect { enabled ->
+            if (enabled && !networkCallbackRegistered) {
+                networkCallbackRegistered = runCatching {
+                    getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(networkCallback)
+                }.isSuccess
+            } else if (!enabled) {
+                stopWatchingNetwork()
+            }
+            preloadEnabled = enabled && networkCallbackRegistered
+            updatePreload()
+        } }
     }
 
     private val listener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             retryUsed = false
+            if (app.autoplayTrack.value?.first != mediaItem?.mediaId) app.autoplayTrack.value = null
+        }
+
+        override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+            if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) queueTracks = null
+        }
+
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playbackState == Player.STATE_ENDED) startAutoplay()
+            else autoJob?.cancel()
+            updatePreload()
         }
 
         override fun onPlayerError(error: PlaybackException) {
-            val http = generateSequence<Throwable>(error) { it.cause }.take(12)
-                .filterIsInstance<InvalidResponseCodeException>().firstOrNull()
             val id = player.currentMediaItem?.mediaId ?: return
-            if (http?.responseCode in setOf(403, 410)) {
-                resolved.remove(id)
+            // Only a CDN response can indicate an expired signed stream.
+            if (streamStatus(error) in setOf(403, 410)) {
+                YoutubeCatalog.forgetStream(id)
                 if (!retryUsed && player.playWhenReady) {
                     retryUsed = true
                     player.prepare()
@@ -202,6 +241,7 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            updatePreload()
             checkpoints?.cancel()
             checkpoints = null
             if (isPlaying) {
@@ -211,6 +251,7 @@ class PlaybackService : MediaSessionService() {
                         delay(5_000)
                         snapshot()
                         recordCurrent()
+                        updatePreload()
                     }
                 }
             } else {
@@ -223,7 +264,7 @@ class PlaybackService : MediaSessionService() {
 
         override fun onPositionDiscontinuity(old: Player.PositionInfo, new: Player.PositionInfo, reason: Int) {
             val completed = reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION
-            val changedTrack = old.mediaItem != new.mediaItem || old.mediaItemIndex != new.mediaItemIndex
+            val changedTrack = old.mediaItem != new.mediaItem
             if (changedTrack || completed) {
                 old.mediaItem?.track()?.takeIf { it.id == lastHistoryId }?.let { record(it, if (completed) 0 else old.positionMs) }
                 if (changedTrack) {
@@ -234,6 +275,9 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onEvents(player: Player, events: Player.Events) {
+            if (events.contains(Player.EVENT_PLAY_WHEN_READY_CHANGED) && !player.playWhenReady) autoJob?.cancel()
+            if (events.containsAny(Player.EVENT_TIMELINE_CHANGED, Player.EVENT_MEDIA_ITEM_TRANSITION,
+                    Player.EVENT_REPEAT_MODE_CHANGED, Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED)) updatePreload()
             if (events.containsAny(Player.EVENT_TIMELINE_CHANGED, Player.EVENT_MEDIA_ITEM_TRANSITION,
                     Player.EVENT_POSITION_DISCONTINUITY, Player.EVENT_REPEAT_MODE_CHANGED,
                     Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED, Player.EVENT_PLAYBACK_PARAMETERS_CHANGED,
@@ -248,7 +292,7 @@ class PlaybackService : MediaSessionService() {
             val result = MediaSession.ConnectionResult.AcceptedResultBuilder(session)
             if (controller.uid == applicationInfo.uid) {
                 result.setAvailableSessionCommands(MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
-                    .add(StopPlayback).add(SleepTimer).build())
+                    .add(StopPlayback).add(SleepTimer).add(RetryPlayback).build())
             } else {
                 if (!controller.isTrusted && !session.isMediaNotificationController(controller)) {
                     return MediaSession.ConnectionResult.reject()
@@ -286,8 +330,65 @@ class PlaybackService : MediaSessionService() {
                 setTimer(args.getInt("minutes").coerceIn(0, 120))
                 SessionResult.RESULT_SUCCESS
             }
+            command.customAction == RetryPlayback.customAction -> {
+                if (player.playerError != null && player.currentMediaItem != null) {
+                    retryUsed = false
+                    player.prepare()
+                    player.play()
+                }
+                SessionResult.RESULT_SUCCESS
+            }
             else -> SessionResult.RESULT_ERROR_NOT_SUPPORTED
         }))
+    }
+
+    private fun updatePreload() {
+        val remaining = player.duration.takeIf { it > 0 }?.minus(player.currentPosition) ?: Long.MAX_VALUE
+        val bufferReady = player.totalBufferedDuration >= minOf(10_000L, remaining.coerceAtLeast(0))
+        val enable = preloadEnabled && player.isPlaying && player.hasNextMediaItem() &&
+            player.repeatMode != Player.REPEAT_MODE_ONE && bufferReady &&
+            !getSystemService(ConnectivityManager::class.java).isActiveNetworkMetered
+        val configuration = if (enable) NEXT_TRACK_PRELOAD else ExoPlayer.PreloadConfiguration.DEFAULT
+        if (player.preloadConfiguration != configuration) player.preloadConfiguration = configuration
+    }
+
+    private fun stopWatchingNetwork() {
+        if (!networkCallbackRegistered) return
+        networkCallbackRegistered = false
+        getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkCallback)
+    }
+
+    private fun startAutoplay() {
+        if (!autoplayEnabled || !player.playWhenReady || player.repeatMode != Player.REPEAT_MODE_OFF ||
+            player.mediaItemCount >= 200 || autoJob?.isActive == true) return
+        val previous = player.currentMediaItem?.track() ?: return
+        val queued = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }
+        autoJob = scope.launch {
+            try {
+                val dao = app.store.dao
+                val seen = queued.toHashSet().apply { addAll(dao.playedIds()) }
+                val fromPlaylist = dao.relatedPlaylistTracks(previous.id).firstOrNull { it.track.id !in seen }?.track
+                val next = fromPlaylist ?: (YoutubeLink.fromText(previous.channelUrl) as? YoutubeLink.Channel)?.let {
+                    val result = YoutubeCatalog.lookup(it.copy(section = ChannelSection.Videos))
+                    result.tracks.firstOrNull { track -> track.id !in seen && track.id !in result.shortIds && track.seconds > 0 }
+                } ?: return@launch
+                val currentQueue = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }
+                if (!autoplayEnabled || !player.playWhenReady || player.playbackState != Player.STATE_ENDED ||
+                    player.repeatMode != Player.REPEAT_MODE_OFF || player.currentMediaItem?.mediaId != previous.id ||
+                    currentQueue != queued || player.mediaItemCount >= 200) return@launch
+                app.autoplayTrack.value = next.id to
+                    if (fromPlaylist != null) "같은 플레이리스트에서 이어 재생" else "같은 채널에서 이어 재생"
+                val index = player.mediaItemCount
+                player.addMediaItem(next.mediaItem())
+                player.seekToDefaultPosition(index)
+                if (player.playbackState == Player.STATE_IDLE) player.prepare()
+                player.play()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // A failed recommendation leaves the completed queue available.
+            }
+        }
     }
 
     private fun setTimer(minutes: Int) {
@@ -326,15 +427,21 @@ class PlaybackService : MediaSessionService() {
     private fun snapshot() {
         if (!initialized) return
         val state = QueueState(
-            (0 until player.mediaItemCount).map { player.getMediaItemAt(it).track() },
+            queueTracks ?: (0 until player.mediaItemCount).map { player.getMediaItemAt(it).track() }
+                .also { queueTracks = it },
             player.currentMediaItemIndex,
             if (player.playbackState == Player.STATE_ENDED) 0 else player.currentPosition,
             player.playbackParameters.speed,
             player.repeatMode, player.shuffleModeEnabled,
         )
+        if (state == savedState) return
+        savedState = state
         app.scope.launch {
             runCatching { app.store.saveQueue(state) }
-                .onFailure { Log.w("AudioFlow", "Could not save playback queue") }
+                .onFailure {
+                    if (savedState == state) savedState = null
+                    Log.w("AudioFlow", "Could not save playback queue")
+                }
         }
     }
 
@@ -342,6 +449,7 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         snapshot()
+        stopWatchingNetwork()
         scope.cancel()
         app.sleepDeadline.value = 0L
         player.removeListener(listener)
@@ -352,13 +460,20 @@ class PlaybackService : MediaSessionService() {
     }
 }
 
+private fun streamStatus(error: Throwable) = generateSequence(error) { it.cause }.take(12)
+    .filterIsInstance<InvalidResponseCodeException>().firstOrNull()?.responseCode
+
 internal fun playbackError(error: PlaybackException): String {
-    val http = generateSequence<Throwable>(error) { it.cause }.take(12)
-        .filterIsInstance<InvalidResponseCodeException>().firstOrNull()
-    return when (http?.responseCode) {
-        403, 410 -> "스트림이 만료되었거나 YouTube가 재생을 거부했어요. 다시 시도해 주세요."
+    return when (streamStatus(error)) {
+        410 -> "스트림 주소가 만료됐어요. 현재 위치에서 다시 시도할 수 있어요."
+        403 -> "YouTube가 이 스트림 요청을 거부했어요. 계속 실패하면 다른 곡을 선택해 주세요."
         429 -> "YouTube가 재생 요청을 제한하고 있어요. 잠시 후 다시 시도해 주세요."
         404 -> "스트림을 찾을 수 없어요. 삭제되었거나 재생이 제한된 콘텐츠일 수 있어요."
-        else -> catalogError(error)
+        else -> when (error.errorCode) {
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ->
+                "네트워크 연결이 끊겼거나 응답이 늦어요. 연결 확인 후 현재 위치에서 다시 시도해 주세요."
+            else -> catalogError(error)
+        }
     }
 }

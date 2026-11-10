@@ -3,6 +3,8 @@ package app.audioflow
 import android.content.ComponentName
 import android.content.Intent
 import android.os.Bundle
+import android.os.SystemClock
+import android.util.LruCache
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -32,10 +34,13 @@ internal class SearchModel : ViewModel() {
         private set
     var mode by mutableStateOf(SearchMode.Music)
         private set
+    var officialFirst by mutableStateOf(false)
+    var hideShorts by mutableStateOf(false)
     var sharedTrack by mutableStateOf<Track?>(null)
         private set
     private var request: Job? = null
     private var retryAction: (() -> Unit)? = null
+    private val recentSearches = LruCache<Pair<SearchMode, String>, Pair<Long, CatalogResult>>(12)
     private data class Previous(val result: CatalogResult?, val error: String?, val retry: (() -> Unit)?)
     private val previous = mutableStateListOf<Previous>()
     val canGoBack get() = previous.isNotEmpty()
@@ -54,7 +59,17 @@ internal class SearchModel : ViewModel() {
                 shared || input.contains("://") || input.startsWith("youtu.be/", true) ||
                     input.contains("youtube.com/", true) ->
                     throw CatalogException("지원되는 YouTube 동영상, 채널 또는 공개 플레이리스트 링크를 입력해 주세요.")
-                else -> YoutubeCatalog.search(input.take(200), searchMode)
+                else -> {
+                    val query = input.take(200)
+                    val key = searchMode to query
+                    val cached = recentSearches.get(key)
+                    if (cached != null && SystemClock.elapsedRealtime() - cached.first < 120_000) cached.second
+                    else YoutubeCatalog.search(query, searchMode).also {
+                        if (it.tracks.isNotEmpty() || it.channels.isNotEmpty() || it.playlists.isNotEmpty()) {
+                            recentSearches.put(key, SystemClock.elapsedRealtime() to it)
+                        }
+                    }
+                }
             }
         }
     }
@@ -92,6 +107,7 @@ internal class SearchModel : ViewModel() {
                 tracks = (current.tracks + page.tracks).distinctBy { it.id },
                 playlists = (current.playlists + page.playlists).distinctBy { it.link },
                 more = page.more,
+                shortIds = current.shortIds + page.shortIds,
             )
         }
     }

@@ -11,6 +11,7 @@ import android.os.SystemClock
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -30,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -84,10 +86,11 @@ private data class PlaybackUi(
     val current get() = queue.getOrNull(index)
 }
 
-private fun MediaController.readPlayback(): PlaybackUi {
-    val track = currentMediaItem?.track()
+private fun MediaController.readPlayback(knownQueue: List<Track>? = null): PlaybackUi {
+    val queue = knownQueue?.takeIf { it.size == mediaItemCount } ?: (0 until mediaItemCount).map { getMediaItemAt(it).track() }
+    val track = queue.getOrNull(currentMediaItemIndex)
     return PlaybackUi(
-        (0 until mediaItemCount).map { getMediaItemAt(it).track() },
+        queue,
         currentMediaItemIndex, currentPosition,
         duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: (track?.seconds ?: 0).coerceAtLeast(0) * 1000,
         isPlaying, playbackState == Player.STATE_BUFFERING && playWhenReady, isCurrentMediaItemSeekable,
@@ -97,6 +100,10 @@ private fun MediaController.readPlayback(): PlaybackUi {
 }
 
 private fun MediaController.togglePlay() {
+    if (playerError != null) {
+        sendCustomCommand(RetryPlayback, Bundle.EMPTY)
+        return
+    }
     if (playWhenReady && playerError == null && playbackState in setOf(Player.STATE_BUFFERING, Player.STATE_READY)) pause()
     else {
         if (playbackState == Player.STATE_IDLE) prepare()
@@ -125,6 +132,7 @@ internal fun AudioFlowScreen(
         }
     }
     val deadline by app.sleepDeadline.collectAsStateWithLifecycle()
+    val autoplayTrack by app.autoplayTrack.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
@@ -137,6 +145,8 @@ internal fun AudioFlowScreen(
     var createList by rememberSaveable { mutableStateOf(false) }
     var clearHistory by rememberSaveable { mutableStateOf(false) }
     var deleteList by remember { mutableStateOf<LocalPlaylist?>(null) }
+    var renameList by remember { mutableStateOf<LocalPlaylist?>(null) }
+    var saveQueue by remember { mutableStateOf<List<Track>?>(null) }
     var playback by remember { mutableStateOf(PlaybackUi()) }
     var playRequest by remember { mutableStateOf<Job?>(null) }
     var importing by remember { mutableStateOf(false) }
@@ -147,7 +157,10 @@ internal fun AudioFlowScreen(
         if (controller == null) return@DisposableEffect onDispose {}
         val listener = object : Player.Listener {
             override fun onEvents(player: Player, events: Player.Events) {
-                playback = controller.readPlayback()
+                val previousQueue = playback.queue.takeUnless {
+                    events.containsAny(Player.EVENT_TIMELINE_CHANGED, Player.EVENT_MEDIA_METADATA_CHANGED)
+                }
+                playback = controller.readPlayback(previousQueue)
             }
         }
         playback = controller.readPlayback()
@@ -261,20 +274,32 @@ internal fun AudioFlowScreen(
             }
         }
     }
-    val favoriteIds = favorites.mapTo(hashSetOf()) { it.track.id }
+    fun enqueue(track: Track, next: Boolean) {
+        val remote = controller
+        when {
+            remote == null -> toast("플레이어가 연결되는 중이에요.")
+            remote.mediaItemCount >= 200 -> toast("대기열은 최대 200개까지 담을 수 있어요.")
+            else -> {
+                val overridesOrder = next && remote.mediaItemCount > 0 &&
+                    (remote.shuffleModeEnabled || remote.repeatMode == Player.REPEAT_MODE_ONE)
+                if (next && remote.mediaItemCount > 0) {
+                    remote.addMediaItem((remote.currentMediaItemIndex + 1).coerceIn(0, remote.mediaItemCount), track.mediaItem())
+                    // Explicitly inserted order must also be the next order the player follows.
+                    if (remote.shuffleModeEnabled) remote.shuffleModeEnabled = false
+                    if (remote.repeatMode == Player.REPEAT_MODE_ONE) remote.repeatMode = Player.REPEAT_MODE_OFF
+                } else remote.addMediaItem(track.mediaItem())
+                toast(when {
+                    overridesOrder -> "다음에 추가했어요. 셔플·한 곡 반복은 꺼졌어요."
+                    next -> "다음에 재생하도록 추가했어요."
+                    else -> "대기열 맨 뒤에 추가했어요."
+                })
+            }
+        }
+    }
+    val favoriteIds = remember(favorites) { favorites.mapTo(hashSetOf()) { it.track.id } }
     val callbacks = TrackActions(
         favoriteIds, { update { dao.toggleFavorite(it) } },
-        { track ->
-            val remote = controller
-            when {
-                remote == null -> toast("플레이어가 연결되는 중이에요.")
-                remote.mediaItemCount >= 200 -> toast("대기열은 최대 200개까지 담을 수 있어요.")
-                else -> {
-                    remote.addMediaItem(track.mediaItem())
-                    toast("대기열에 추가했어요.")
-                }
-            }
-        },
+        ::enqueue,
         { playlistPicker = it },
         ::openYouTube,
         { excludeTrack = it },
@@ -314,9 +339,11 @@ internal fun AudioFlowScreen(
                 playerOpen -> PlayerScreen(
                     modifier, playback, controller, deadline, favoriteIds, callbacks,
                     queueOpen, { queueOpen = it }, { playerOpen = false; queueOpen = false },
+                    { saveQueue = playback.queue }, autoplayTrack?.takeIf { it.first == playback.current?.id }?.second,
                 )
                 page == Page.Home -> HomeScreen(modifier, search, history.map { it.track },
-                    callbacks, ::play, ::removeHistory, ::importPlaylist, importing, connectionError, connect)
+                    callbacks, ::play, ::removeHistory, ::importPlaylist, importing, connectionError, connect,
+                    playback, { controller?.togglePlay(); playerOpen = true })
                 page == Page.Library -> {
                     val playlist = playlists.firstOrNull { it.id == playlistId }
                     val entries by remember(playlist?.id) { playlist?.let { dao.playlistTracks(it.id) }
@@ -324,13 +351,14 @@ internal fun AudioFlowScreen(
                     LibraryScreen(
                         modifier, shelf, { shelf = it }, favorites.map { it.track }, history.map { it.track },
                         playlists, playlist, entries.map { it.track }, { playlistId = it }, { createList = true },
-                        { deleteList = it }, { track -> playlist?.let { list ->
+                        { deleteList = it }, { renameList = it }, { track -> playlist?.let { list ->
                             update { dao.removeFromPlaylist(list.id, track.id) }
                         } }, ::removeHistory, ::findDuplicates, callbacks, { tracks, index -> play(tracks, index) },
+                        { ids -> playlist?.let { list -> update { dao.removeDuplicates(list.id, ids) } } },
                     )
                 }
                 else -> SettingsScreen(modifier, dark, { update { store.setDark(it) } },
-                    { clearHistory = true }, controller, playback, deadline)
+                    { clearHistory = true }, controller, playback, deadline, store)
             }
         }
 
@@ -373,6 +401,21 @@ internal fun AudioFlowScreen(
                 },
                 dismissButton = { TextButton(onClick = { createList = false }) { Text("취소") } },
             )
+        }
+        renameList?.let { list ->
+            PlaylistNameDialog("플레이리스트 이름 변경", list.name, { renameList = null }) { name ->
+                update { dao.renamePlaylist(list.id, name) }
+                renameList = null
+            }
+        }
+        saveQueue?.let { queue ->
+            PlaylistNameDialog("대기열을 플레이리스트로 저장", "", { saveQueue = null }) { name ->
+                update {
+                    dao.importPlaylist(name, queue)
+                    toast("대기열을 플레이리스트로 저장했어요.")
+                }
+                saveQueue = null
+            }
         }
         if (clearHistory) ConfirmDialog("재생 기록을 지울까요?", "최근 기록과 트랙별 재생 위치가 삭제돼요.",
             { clearHistory = false }, { update { dao.clearHistory() }; clearHistory = false })
@@ -426,10 +469,19 @@ private fun ConfirmDialog(title: String, message: String, dismiss: () -> Unit, c
         dismissButton = { TextButton(onClick = dismiss) { Text("취소") } })
 }
 
+@Composable
+private fun PlaylistNameDialog(title: String, initial: String, dismiss: () -> Unit, save: (String) -> Unit) {
+    var name by rememberSaveable(initial) { mutableStateOf(initial) }
+    AlertDialog(onDismissRequest = dismiss, title = { Text(title) },
+        text = { OutlinedTextField(name, { name = it.take(70) }, label = { Text("이름") }, singleLine = true) },
+        confirmButton = { TextButton(onClick = { save(name.trim()) }, enabled = name.isNotBlank()) { Text("저장") } },
+        dismissButton = { TextButton(onClick = dismiss) { Text("취소") } })
+}
+
 private data class TrackActions(
     val favorites: Set<String>,
     val favorite: (Track) -> Unit,
-    val enqueue: (Track) -> Unit,
+    val enqueue: (Track, Boolean) -> Unit,
     val playlist: (Track) -> Unit,
     val openChannel: (Track) -> Unit,
     val exclude: (Track) -> Unit,
@@ -450,13 +502,20 @@ private fun HomeScreen(
     modifier: Modifier, search: SearchModel, history: List<Track>, actions: TrackActions,
     play: (List<Track>, Int, Boolean) -> Unit, removeHistory: (Track) -> Unit,
     importPlaylist: (CatalogResult) -> Unit, importing: Boolean, connectionError: Boolean, connect: () -> Unit,
+    playback: PlaybackUi, resume: () -> Unit,
 ) {
     val focus = LocalFocusManager.current
     val results = search.result
     val channel = results?.channel
     val browsing = search.canGoBack || channel != null || results?.isPlaylist == true
     val showingResults = results != null || search.loading || search.error != null
-    val tracks = if (showingResults) results?.tracks.orEmpty() else history.take(20)
+    val tracks = remember(results, showingResults, history, browsing, search.officialFirst, search.hideShorts) {
+        when {
+            results != null && !browsing -> filteredSearchTracks(results, search.officialFirst, search.hideShorts)
+            showingResults -> results?.tracks.orEmpty()
+            else -> history.take(20)
+        }
+    }
     val listState = rememberLazyListState()
     LaunchedEffect(channel?.id, results?.section, results?.isPlaylist, search.canGoBack) {
         listState.scrollToItem(0)
@@ -488,6 +547,29 @@ private fun HomeScreen(
                 }
                 Button(onClick = { focus.clearFocus(); search.submit() },
                     enabled = search.query.isNotBlank() && !search.loading) { Text("검색 및 링크 열기") }
+                if (results != null && search.mode != SearchMode.Channels) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(search.officialFirst, { search.officialFirst = !search.officialFirst },
+                            label = { Text("공식 영상·음원 우선") })
+                        FilterChip(search.hideShorts, { search.hideShorts = !search.hideShorts },
+                            label = { Text("Shorts 제외") })
+                    }
+                }
+                if (!showingResults && !playback.playing && !playback.buffering) {
+                    playback.current?.let { track ->
+                        val next = playback.queue.getOrNull(playback.index + 1)?.takeUnless { playback.shuffle }
+                        Card(onClick = resume, modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
+                            ListItem(headlineContent = { Text("이어서 듣기 · ${track.title}", maxLines = 2) },
+                                supportingContent = {
+                                    val left = (playback.duration - playback.position).coerceAtLeast(0L) / 1000
+                                    Text(listOfNotNull(if (playback.duration > 0) "${time(left)} 남음" else null,
+                                        next?.let { "다음 · ${it.title}" }).joinToString("  ·  "), maxLines = 2)
+                                },
+                                leadingContent = { Artwork(track, Modifier.size(48.dp)) },
+                                trailingContent = { Icon(Icons.Default.PlayArrow, null) })
+                        }
+                    }
+                }
             }
             if (channel != null) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -632,7 +714,8 @@ private fun TrackRow(
         Box {
             IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "${track.title} 옵션") }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                DropdownMenuItem(text = { Text("대기열에 추가") }, onClick = { menu = false; actions.enqueue(track) })
+                DropdownMenuItem(text = { Text("다음에 재생") }, onClick = { menu = false; actions.enqueue(track, true) })
+                DropdownMenuItem(text = { Text("맨 뒤에 추가") }, onClick = { menu = false; actions.enqueue(track, false) })
                 DropdownMenuItem(text = { Text(if (track.id in actions.favorites) "즐겨찾기에서 제거" else "즐겨찾기에 추가") },
                     onClick = { menu = false; actions.favorite(track) })
                 DropdownMenuItem(text = { Text("플레이리스트에 추가") }, onClick = { menu = false; actions.playlist(track) })
@@ -681,11 +764,22 @@ private fun RemovableTrackRow(
 private fun LibraryScreen(
     modifier: Modifier, shelf: Shelf, selectShelf: (Shelf) -> Unit, favorites: List<Track>,
     history: List<Track>, lists: List<LocalPlaylist>, active: LocalPlaylist?, entries: List<Track>,
-    open: (Long?) -> Unit, create: () -> Unit, delete: (LocalPlaylist) -> Unit, remove: (Track) -> Unit,
+    open: (Long?) -> Unit, create: () -> Unit, delete: (LocalPlaylist) -> Unit, rename: (LocalPlaylist) -> Unit, remove: (Track) -> Unit,
     removeHistory: (Track) -> Unit, findDuplicates: (Long?, List<Track>) -> Unit,
-    actions: TrackActions, play: (List<Track>, Int) -> Unit,
+    actions: TrackActions, play: (List<Track>, Int) -> Unit, removeSelected: (List<String>) -> Unit,
 ) {
-    val tracks = if (active != null) entries else when (shelf) {
+    var query by rememberSaveable(active?.id) { mutableStateOf("") }
+    var sort by rememberSaveable(active?.id) { mutableIntStateOf(0) }
+    var selecting by remember(active?.id) { mutableStateOf(false) }
+    var selected by remember(active?.id) { mutableStateOf(emptySet<String>()) }
+    val tracks = if (active != null) remember(entries, query, sort) {
+        val filtered = entries.filter { query.isBlank() || it.title.contains(query.trim(), true) || it.channel.contains(query.trim(), true) }
+        when (sort) {
+            1 -> filtered.sortedBy { it.title.lowercase(Locale.ROOT) }
+            2 -> filtered.sortedBy { it.channel.lowercase(Locale.ROOT) }
+            else -> filtered
+        }
+    } else when (shelf) {
         Shelf.Favorite -> favorites
         Shelf.History -> history
         Shelf.Playlists -> emptyList()
@@ -701,9 +795,26 @@ private fun LibraryScreen(
                 TextButton(onClick = { open(null) }) { Text("목록으로 돌아가기") }
                 SectionTitle(active.name, entries.size)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    TextButton(enabled = entries.isNotEmpty(), onClick = { play(entries, 0) }) { Text("모두 재생") }
+                    TextButton(enabled = tracks.isNotEmpty(), onClick = { play(tracks, 0) }) { Text("모두 재생") }
                     TextButton(enabled = entries.size > 1, onClick = { findDuplicates(active.id, entries) }) { Text("중복 정리") }
-                    if (active.id != DEFAULT_PLAYLIST_ID) TextButton(onClick = { delete(active) }) { Text("목록 삭제") }
+                    if (active.id != DEFAULT_PLAYLIST_ID) {
+                        TextButton(onClick = { rename(active) }) { Text("이름 변경") }
+                        TextButton(onClick = { delete(active) }) { Text("목록 삭제") }
+                    }
+                }
+                OutlinedTextField(query, { query = it.take(100) }, Modifier.fillMaxWidth(),
+                    label = { Text("이 목록에서 검색") }, singleLine = true)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("저장 순서", "제목순", "채널순").forEachIndexed { index, title ->
+                        FilterChip(sort == index, { sort = index }, label = { Text(title) })
+                    }
+                    TextButton(onClick = { selecting = !selecting; selected = emptySet() },
+                        enabled = entries.isNotEmpty()) { Text(if (selecting) "선택 취소" else "여러 곡 선택") }
+                    if (selecting) TextButton(enabled = selected.isNotEmpty(), onClick = {
+                        removeSelected(selected.toList())
+                        selected = emptySet()
+                        selecting = false
+                    }) { Text("선택한 ${selected.size}곡 제외") }
                 }
             }
         }
@@ -719,7 +830,9 @@ private fun LibraryScreen(
                     modifier = Modifier.clickable { open(list.id) })
             }
         } else {
-            if (tracks.isEmpty()) item { EmptyState("아직 저장된 트랙이 없어요.") }
+            if (tracks.isEmpty()) item {
+                EmptyState(if (query.isNotBlank()) "이 목록에 검색과 일치하는 곡이 없어요." else "아직 저장된 트랙이 없어요.")
+            }
             if (shelf == Shelf.History && active == null && tracks.isNotEmpty()) item {
                 TextButton(enabled = tracks.size > 1, onClick = { findDuplicates(null, tracks) }) { Text("중복 정리") }
                 Text("항목을 왼쪽으로 밀거나 옵션에서 기록을 지울 수 있어요.",
@@ -728,6 +841,11 @@ private fun LibraryScreen(
             itemsIndexed(tracks, key = { _, track -> track.id }) { index, track ->
                 if (active == null && shelf == Shelf.History) {
                     RemovableTrackRow(track, actions, { play(tracks, index) }, { removeHistory(track) }, "재생 기록에서 삭제")
+                } else if (active != null && selecting) {
+                    fun toggle() { selected = if (track.id in selected) selected - track.id else selected + track.id }
+                    ListItem(headlineContent = { Text(track.title) }, supportingContent = { Text(track.channel) },
+                        leadingContent = { Checkbox(track.id in selected, onCheckedChange = { toggle() }) },
+                        modifier = Modifier.clickable { toggle() })
                 } else if (active != null) {
                     RemovableTrackRow(track, actions, { play(tracks, index) }, { remove(track) }, "이 목록에서 제외")
                 } else TrackRow(track, actions, { play(tracks, index) })
@@ -773,10 +891,18 @@ private fun MiniPlayer(track: Track, state: PlaybackUi, expand: () -> Unit, togg
 private fun PlayerScreen(
     modifier: Modifier, state: PlaybackUi, controller: MediaController?, deadline: Long,
     favorites: Set<String>, actions: TrackActions, showQueue: Boolean, setQueue: (Boolean) -> Unit, close: () -> Unit,
+    saveQueue: () -> Unit, autoplayReason: String?,
 ) {
     val current = state.current
+    val context = LocalContext.current
+    val listState = rememberLazyListState()
+    var selecting by remember(showQueue) { mutableStateOf(false) }
+    var selected by remember(state.queue, state.index) { mutableStateOf(emptySet<Int>()) }
+    var dragTarget by remember(state.queue) { mutableStateOf<Int?>(null) }
+    LaunchedEffect(showQueue) { listState.scrollToItem(0) }
     LazyColumn(
         modifier.windowInsetsPadding(WindowInsets.navigationBars),
+        state = listState,
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp),
     ) {
         item {
@@ -788,27 +914,75 @@ private fun PlayerScreen(
             }
         }
         if (showQueue) {
-            item { SectionTitle("재생 대기열", state.queue.size) }
+            item {
+                SectionTitle("재생 대기열", state.queue.size)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TextButton(enabled = state.queue.isNotEmpty(), onClick = saveQueue) { Text("플레이리스트로 저장") }
+                    TextButton(enabled = state.queue.size > 1, onClick = { selecting = !selecting; selected = emptySet() }) {
+                        Text(if (selecting) "선택 취소" else "여러 곡 선택")
+                    }
+                    if (selecting) TextButton(enabled = selected.isNotEmpty(), onClick = {
+                        selected.sortedDescending().forEach { index ->
+                            if (index != state.index) controller?.removeMediaItem(index)
+                        }
+                        selecting = false
+                        selected = emptySet()
+                    }) { Text("선택한 ${selected.size}곡 제외") }
+                }
+            }
             if (state.queue.isEmpty()) item { EmptyState("대기열이 비어 있어요.") }
-            itemsIndexed(state.queue) { index, track ->
+            itemsIndexed(state.queue, key = { index, _ -> "queue-$index" }) { index, track ->
+                val currentItem = index == state.index
+                fun select() { if (!currentItem) selected = if (index in selected) selected - index else selected + index }
                 ListItem(
                     headlineContent = { Text(track.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
                     supportingContent = { Text(track.channel, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    leadingContent = { Text(if (index == state.index) "▶" else "${index + 1}",
-                        color = MaterialTheme.colorScheme.primary) },
+                    leadingContent = {
+                        if (selecting) Checkbox(index in selected, { select() }, enabled = !currentItem)
+                        else Text(if (currentItem) "▶" else "${index + 1}", color = MaterialTheme.colorScheme.primary)
+                    },
+                    colors = ListItemDefaults.colors(containerColor = if (dragTarget == index)
+                        MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface),
                     modifier = Modifier.clickable(enabled = controller != null) {
-                        controller?.let {
+                        if (selecting) select() else controller?.let {
                             it.seekToDefaultPosition(index)
                             if (it.playbackState == Player.STATE_IDLE) it.prepare()
                             it.play()
                         }
                     },
-                    trailingContent = {
+                    trailingContent = if (selecting) null else {
+                        {
                         Row {
+                            Icon(Icons.Default.Menu, "길게 눌러 순서 이동",
+                                Modifier.size(44.dp).padding(10.dp).pointerInput(state.queue, index, controller) {
+                                    var y = 0f
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = {
+                                            val row = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == "queue-$index" }
+                                            y = row?.let { it.offset + it.size / 2f } ?: 0f
+                                            dragTarget = index
+                                        },
+                                        onDragEnd = {
+                                            dragTarget?.takeIf { it != index }?.let { controller?.moveMediaItem(index, it) }
+                                            dragTarget = null
+                                        },
+                                        onDragCancel = { dragTarget = null },
+                                    ) { change, amount ->
+                                        change.consume()
+                                        y += amount.y
+                                        dragTarget = listState.layoutInfo.visibleItemsInfo
+                                            .filter { (it.key as? String)?.startsWith("queue-") == true }
+                                            .minByOrNull { kotlin.math.abs(y - (it.offset + it.size / 2f)) }
+                                            ?.let { (it.key as String).removePrefix("queue-").toIntOrNull() }
+                                    }
+                                })
                             IconButton(onClick = { controller?.moveMediaItem(index, index - 1) }, enabled = index > 0) {
                                 Icon(Icons.Default.KeyboardArrowUp, "앞으로 이동")
                             }
-                            IconButton(onClick = { controller?.removeMediaItem(index) }) { Icon(Icons.Default.Close, "대기열에서 제거") }
+                            IconButton(onClick = { controller?.removeMediaItem(index) }, enabled = !currentItem) {
+                                Icon(Icons.Default.Close, "대기열에서 제거")
+                            }
+                        }
                         }
                     },
                 )
@@ -847,8 +1021,30 @@ private fun PlayerScreen(
                     }
                     TextButton(onClick = { controller?.seekToNextMediaItem() }, enabled = state.hasNext) { Text("다음") }
                 }
+                if (autoplayReason != null) Text(autoplayReason, style = MaterialTheme.typography.labelMedium)
+                if (state.error != null) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TextButton(enabled = state.hasNext, onClick = {
+                        controller?.let {
+                            it.seekToNextMediaItem()
+                            if (it.playbackState == Player.STATE_IDLE) it.prepare()
+                            it.play()
+                        }
+                    }) { Text("다음 곡 재생") }
+                    TextButton(onClick = {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/watch?v=${current.id}"))
+                        try {
+                            context.startActivity(Intent(intent).setPackage("com.google.android.youtube"))
+                        } catch (_: ActivityNotFoundException) {
+                            try {
+                                context.startActivity(intent)
+                            } catch (_: ActivityNotFoundException) {
+                                android.widget.Toast.makeText(context, "YouTube 링크를 열 앱이 없어요.", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }) { Text("YouTube에서 열기") }
+                }
                 PlaybackOptions(controller, state, deadline)
-                CaptionPanel(current.id, state.position)
+                CaptionPanel(current.id, state.position, state.seekable) { controller?.seekTo(it) }
                 TextButton(onClick = { controller?.sendCustomCommand(StopPlayback, Bundle.EMPTY) },
                     enabled = controller != null) { Text("재생 종료") }
             }
@@ -931,8 +1127,11 @@ private fun PlaybackOptions(controller: MediaController?, state: PlaybackUi, dea
 @Composable
 private fun SettingsScreen(
     modifier: Modifier, dark: Boolean, setDark: (Boolean) -> Unit, clearHistory: () -> Unit,
-    controller: MediaController?, playback: PlaybackUi, deadline: Long,
+    controller: MediaController?, playback: PlaybackUi, deadline: Long, store: LocalStore,
 ) {
+    val autoplay by store.autoplay.collectAsStateWithLifecycle(false)
+    val preload by store.preload.collectAsStateWithLifecycle(false)
+    val scope = rememberCoroutineScope()
     LazyColumn(modifier, contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp)) {
         item {
             Headline("PREFERENCES", "설정", "재생 방식과 기기에 저장된 정보를 관리해요.")
@@ -940,12 +1139,19 @@ private fun SettingsScreen(
             PlaybackOptions(controller, playback, deadline)
             Text("오디오 전용 스트림을 먼저 사용해요. 제공되지 않으면 영상이 포함된 스트림에서 소리만 재생해요.",
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            ListItem(headlineContent = { Text("다음 곡 미리 준비") },
+                supportingContent = { Text("데이터 사용량이 제한되지 않은 연결에서 다음 한 곡을 미리 준비해요.") },
+                trailingContent = { Switch(preload, { scope.launch { store.setPreload(it) } }) })
+            ListItem(headlineContent = { Text("관련 곡 이어 재생") },
+                supportingContent = { Text("대기열이 끝나면 같은 목록이나 채널에서 아직 듣지 않은 곡을 찾아요.") },
+                trailingContent = { Switch(autoplay, { scope.launch { store.setAutoplay(it) } }) })
             SectionTitle("화면", 0)
             ListItem(headlineContent = { Text("다크 모드") }, trailingContent = {
                 Switch(checked = dark, onCheckedChange = setDark,
                     modifier = Modifier.semantics { contentDescription = "다크 모드" })
             })
             SectionTitle("기기 저장", 0)
+            LibraryBackupControls(store.dao)
             ListItem(headlineContent = { Text("재생 기록 지우기") },
                 supportingContent = { Text("최근 재생과 트랙별 재생 위치를 삭제해요.") },
                 modifier = Modifier.clickable(onClick = clearHistory))

@@ -12,6 +12,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -50,6 +52,8 @@ data class LocalPlaylist(@PrimaryKey(autoGenerate = true) val id: Long = 0, val 
 )
 data class PlaylistEntry(val playlistId: Long, val trackId: String, val addedAt: Long)
 
+data class BackupEntryRow(val playlistId: Long, @Embedded val track: Track)
+
 @Dao
 abstract class LibraryDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -70,6 +74,21 @@ abstract class LibraryDao {
     @Query("UPDATE tracks SET favoriteAt=CASE WHEN favoriteAt=0 THEN :now ELSE 0 END WHERE id=:id")
     abstract suspend fun flipFavorite(id: String, now: Long)
 
+    @Query("UPDATE tracks SET favoriteAt=:now WHERE id=:id AND favoriteAt=0")
+    protected abstract suspend fun markFavorite(id: String, now: Long)
+
+    @Query("SELECT id FROM tracks WHERE playedAt>0")
+    abstract suspend fun playedIds(): List<String>
+
+    @Query("""
+        SELECT DISTINCT tracks.* FROM tracks JOIN playlist_tracks AS entry ON tracks.id=entry.trackId
+        WHERE entry.playlistId IN (
+            SELECT playlistId FROM playlist_tracks WHERE trackId=:id AND playlistId != -1
+        ) AND tracks.playedAt=0 AND tracks.id != :id
+        ORDER BY entry.addedAt, entry.trackId LIMIT 200
+    """)
+    abstract suspend fun relatedPlaylistTracks(id: String): List<SavedTrack>
+
     @Query("SELECT * FROM tracks WHERE playedAt>0 ORDER BY playedAt DESC LIMIT 100")
     abstract fun history(): Flow<List<SavedTrack>>
 
@@ -85,11 +104,23 @@ abstract class LibraryDao {
     @Query("SELECT * FROM playlists ORDER BY id")
     abstract fun playlists(): Flow<List<LocalPlaylist>>
 
+    @Query("SELECT * FROM playlists ORDER BY id")
+    protected abstract suspend fun allPlaylists(): List<LocalPlaylist>
+
+    @Query("SELECT * FROM tracks WHERE favoriteAt>0 ORDER BY favoriteAt DESC")
+    protected abstract suspend fun allFavorites(): List<SavedTrack>
+
+    @Query("SELECT playlistId, tracks.* FROM playlist_tracks JOIN tracks ON tracks.id=trackId ORDER BY playlistId, addedAt, trackId")
+    protected abstract suspend fun allBackupEntries(): List<BackupEntryRow>
+
     @Query("SELECT tracks.* FROM tracks JOIN playlist_tracks ON tracks.id=trackId WHERE playlistId=:id ORDER BY addedAt, trackId")
     abstract fun playlistTracks(id: Long): Flow<List<SavedTrack>>
 
     @Insert
     abstract suspend fun createPlaylist(playlist: LocalPlaylist): Long
+
+    @Query("UPDATE playlists SET name=:name WHERE id=:id AND id != -1")
+    abstract suspend fun renamePlaylist(id: Long, name: String)
 
     @Query("DELETE FROM playlists WHERE id=:id AND id != -1")
     abstract suspend fun deletePlaylist(id: Long)
@@ -138,8 +169,7 @@ abstract class LibraryDao {
 
     @Transaction
     open suspend fun addToPlaylist(id: Long, track: Track) {
-        remember(track)
-        insertPlaylistEntry(PlaylistEntry(id, track.id, System.currentTimeMillis()))
+        appendTracks(id, listOf(track))
     }
 
     @Transaction
@@ -151,12 +181,45 @@ abstract class LibraryDao {
     @Transaction
     open suspend fun importPlaylist(name: String, tracks: List<Track>) {
         require(tracks.isNotEmpty())
-        val id = createPlaylist(LocalPlaylist(name = name))
-        val start = System.currentTimeMillis()
+        appendTracks(createPlaylist(LocalPlaylist(name = name)), tracks)
+    }
+
+    @Query("SELECT COALESCE(MAX(addedAt), 0) FROM playlist_tracks WHERE playlistId=:id")
+    protected abstract suspend fun lastAddedAt(id: Long): Long
+
+    private suspend fun appendTracks(id: Long, tracks: List<Track>, refreshExisting: Boolean = true) {
+        val start = maxOf(System.currentTimeMillis(), lastAddedAt(id) + 1)
         tracks.distinctBy { it.id }.forEachIndexed { index, track ->
-            remember(track)
+            if (refreshExisting) remember(track) else insert(SavedTrack(track))
             insertPlaylistEntry(PlaylistEntry(id, track.id, start + index))
         }
+    }
+
+    @Transaction
+    open suspend fun backup(): LibraryBackup {
+        val entries = allBackupEntries().groupBy(BackupEntryRow::playlistId, BackupEntryRow::track)
+        return LibraryBackup(allFavorites().map { it.track }, allPlaylists().map { list ->
+            BackupPlaylist(list.name, list.id == DEFAULT_PLAYLIST_ID, entries[list.id].orEmpty())
+        })
+    }
+
+    @Transaction
+    open suspend fun mergeBackup(backup: LibraryBackup): BackupPreview {
+        val preview = previewBackup(backup(), backup)
+        val now = System.currentTimeMillis()
+        preview.additions.favorites.forEachIndexed { index, track ->
+            insert(SavedTrack(track))
+            markFavorite(track.id, now - index)
+        }
+        preview.additions.playlists.forEach { list ->
+            if (list.isDefault) {
+                ensureDefaultPlaylist()
+                appendTracks(DEFAULT_PLAYLIST_ID, list.tracks, refreshExisting = false)
+            } else {
+                appendTracks(createPlaylist(LocalPlaylist(name = list.name)), list.tracks, refreshExisting = false)
+            }
+        }
+        return preview
     }
 }
 
@@ -186,17 +249,25 @@ class LocalStore(context: Context) {
         }).build().library()
     private val settings = context.settings
     private val queueKey = stringPreferencesKey("queue")
+    private val queueWrite = Mutex()
     private val darkKey = booleanPreferencesKey("dark")
+    private val autoplayKey = booleanPreferencesKey("autoplay")
+    private val preloadKey = booleanPreferencesKey("preload")
     private val data = settings.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }
     val dark = data.map { it[darkKey] ?: true }.distinctUntilChanged()
+    val autoplay = data.map { it[autoplayKey] ?: false }.distinctUntilChanged()
+    val preload = data.map { it[preloadKey] ?: false }.distinctUntilChanged()
 
     suspend fun setDark(dark: Boolean) {
         settings.edit { it[darkKey] = dark }
     }
 
-    suspend fun readQueue(): QueueState {
-        val raw = data.first()[queueKey] ?: return QueueState()
-        return runCatching {
+    suspend fun setAutoplay(enabled: Boolean) { settings.edit { it[autoplayKey] = enabled } }
+    suspend fun setPreload(enabled: Boolean) { settings.edit { it[preloadKey] = enabled } }
+
+    suspend fun readQueue(): QueueState = queueWrite.withLock {
+        val raw = data.first()[queueKey] ?: return@withLock QueueState()
+        runCatching {
             val json = JSONObject(raw)
             val tracks = json.getJSONArray("tracks")
             QueueState(
@@ -214,16 +285,20 @@ class LocalStore(context: Context) {
         }.getOrDefault(QueueState())
     }
 
-    suspend fun saveQueue(state: QueueState) {
+    suspend fun saveQueue(state: QueueState) = queueWrite.withLock {
+        val raw = kotlinx.coroutines.withContext(Dispatchers.Default) { encodeQueue(state) }
+        settings.edit { it[queueKey] = raw }
+    }
+
+    private fun encodeQueue(state: QueueState): String {
         val tracks = JSONArray()
         state.tracks.forEach { track ->
             tracks.put(JSONObject().put("id", track.id).put("title", track.title)
                 .put("channel", track.channel).put("thumbnail", track.thumbnail).put("seconds", track.seconds)
                 .put("channelUrl", track.channelUrl))
         }
-        val raw = JSONObject().put("tracks", tracks).put("index", state.index).put("position", state.position)
+        return JSONObject().put("tracks", tracks).put("index", state.index).put("position", state.position)
             .put("speed", state.speed).put("repeat", state.repeat).put("shuffle", state.shuffle).toString()
-        settings.edit { it[queueKey] = raw }
     }
 }
 
@@ -244,4 +319,5 @@ class AudioFlowApp : Application(), coil.ImageLoaderFactory {
     val store by lazy { LocalStore(this) }
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val sleepDeadline = MutableStateFlow(0L)
+    val autoplayTrack = MutableStateFlow<Pair<String, String>?>(null)
 }

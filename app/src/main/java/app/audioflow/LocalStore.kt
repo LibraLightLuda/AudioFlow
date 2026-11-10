@@ -12,6 +12,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
@@ -253,10 +254,20 @@ class LocalStore(context: Context) {
     private val darkKey = booleanPreferencesKey("dark")
     private val autoplayKey = booleanPreferencesKey("autoplay")
     private val preloadKey = booleanPreferencesKey("preload")
+    private val soundKey = stringPreferencesKey("sound_profile")
+    private val soundPresetsKey = stringSetPreferencesKey("sound_presets")
     private val data = settings.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }
     val dark = data.map { it[darkKey] ?: true }.distinctUntilChanged()
     val autoplay = data.map { it[autoplayKey] ?: false }.distinctUntilChanged()
     val preload = data.map { it[preloadKey] ?: false }.distinctUntilChanged()
+    internal val sound = data.map { SoundProfile.decode(it[soundKey]) }.distinctUntilChanged()
+    internal val soundPresets = data.map { prefs ->
+        prefs[soundPresetsKey].orEmpty().mapNotNull { encoded ->
+            val name = encoded.substringBefore('|')
+            if (name.isBlank() || '|' !in encoded) null
+            else SoundPreset(name, SoundProfile.decode(encoded.substringAfter('|')))
+        }.sortedBy { it.name }
+    }.distinctUntilChanged()
 
     suspend fun setDark(dark: Boolean) {
         settings.edit { it[darkKey] = dark }
@@ -264,6 +275,27 @@ class LocalStore(context: Context) {
 
     suspend fun setAutoplay(enabled: Boolean) { settings.edit { it[autoplayKey] = enabled } }
     suspend fun setPreload(enabled: Boolean) { settings.edit { it[preloadKey] = enabled } }
+
+    internal suspend fun setSound(profile: SoundProfile) { settings.edit { it[soundKey] = profile.encode() } }
+
+    internal suspend fun saveSoundPreset(name: String, profile: SoundProfile): Boolean {
+        require(name.isNotBlank() && name.length <= 28 && '|' !in name)
+        var saved = false
+        settings.edit { prefs ->
+            val existing = prefs[soundPresetsKey].orEmpty().filterNot { it.substringBefore('|').equals(name, true) }
+            if (existing.size < MAX_SOUND_PRESETS) {
+                prefs[soundPresetsKey] = existing.toSet() + "$name|${profile.encode()}"
+                saved = true
+            }
+        }
+        return saved
+    }
+
+    internal suspend fun removeSoundPreset(name: String) {
+        settings.edit { prefs ->
+            prefs[soundPresetsKey] = prefs[soundPresetsKey].orEmpty().filterNot { it.substringBefore('|') == name }.toSet()
+        }
+    }
 
     suspend fun readQueue(): QueueState = queueWrite.withLock {
         val raw = data.first()[queueKey] ?: return@withLock QueueState()
@@ -308,6 +340,10 @@ class AudioFlowApp : Application(), coil.ImageLoaderFactory {
         super.onCreate()
         androidx.media3.common.util.Log.setLogLevel(androidx.media3.common.util.Log.LOG_LEVEL_OFF)
         androidx.media3.common.util.Log.setLogStackTraces(false)
+        scope.launch {
+            val stored = store.sound.first()
+            if (!soundEdited) sound.value = stored
+        }
     }
 
     override fun newImageLoader(): coil.ImageLoader = coil.ImageLoader.Builder(this)
@@ -321,4 +357,21 @@ class AudioFlowApp : Application(), coil.ImageLoaderFactory {
     val sleepDeadline = MutableStateFlow(0L)
     val autoplayTrack = MutableStateFlow<Pair<String, String>?>(null)
     internal val radio = MutableStateFlow(RadioUi())
+    internal val sound = MutableStateFlow(SoundProfile())
+    private var soundEdited = false
+
+    internal fun changeSound(profile: SoundProfile, persist: Boolean) {
+        soundEdited = true
+        sound.value = profile
+        if (persist) saveSound()
+    }
+
+    internal fun saveSound() {
+        if (!soundEdited) return
+        val profile = sound.value
+        scope.launch {
+            runCatching { store.setSound(profile) }
+                .onFailure { android.util.Log.w("AudioFlow", "Could not save sound settings") }
+        }
+    }
 }

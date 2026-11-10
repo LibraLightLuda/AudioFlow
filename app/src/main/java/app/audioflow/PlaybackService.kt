@@ -3,6 +3,7 @@
 package app.audioflow
 
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
@@ -24,7 +25,10 @@ import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
@@ -167,14 +171,22 @@ class PlaybackService : MediaSessionService() {
                     return if (retryable && info.errorCount in 1..4) 750L shl (info.errorCount - 1) else C.TIME_UNSET
                 }
             })
-        player = ExoPlayer.Builder(this).setMediaSourceFactory(media)
+        val soundProcessor = SoundAudioProcessor().apply { profile = app.sound.value }
+        var systemSpace = soundProcessor.profile.space == SoundSpace.System
+        val renderers = object : DefaultRenderersFactory(this) {
+            override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioOutputPlaybackParams: Boolean): AudioSink =
+                DefaultAudioSink.Builder(context)
+                    .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParams)
+                    .setAudioProcessors(arrayOf(soundProcessor))
+                    .build()
+        }
+        player = ExoPlayer.Builder(this, renderers).setMediaSourceFactory(media)
             .setLoadControl(DefaultLoadControl.Builder()
                 .setTargetBufferBytes(STREAM_BUFFER_TARGET_BYTES)
                 .setBufferDurationsMs(30_000, 65_000, 1_500, 5_000)
                 .setPrioritizeTimeOverSizeThresholds(false)
                 .build())
-            .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
-                .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
+            .setAudioAttributes(soundAttributes(systemSpace), true)
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .build()
@@ -187,6 +199,16 @@ class PlaybackService : MediaSessionService() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         session = MediaSession.Builder(this, player).setBitmapLoader(privateArtworkLoader(this))
             .setSessionActivity(openApp).setCallback(callback).build()
+        scope.launch {
+            app.sound.collect { profile ->
+                soundProcessor.profile = profile
+                val next = profile.space == SoundSpace.System
+                if (next != systemSpace) {
+                    systemSpace = next
+                    player.setAudioAttributes(soundAttributes(next), true)
+                }
+            }
+        }
 
         restoreJob = scope.launch {
             val queue = app.store.readQueue()
@@ -217,6 +239,11 @@ class PlaybackService : MediaSessionService() {
             updatePreload()
         } }
     }
+
+    private fun soundAttributes(systemSpace: Boolean) = AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
+        .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+        .setSpatializationBehavior(if (systemSpace) C.SPATIALIZATION_BEHAVIOR_AUTO else C.SPATIALIZATION_BEHAVIOR_NEVER)
+        .build()
 
     private val listener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {

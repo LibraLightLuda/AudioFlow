@@ -29,6 +29,26 @@ import org.junit.runner.RunWith
 class DeviceTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
 
+    @Test fun soundProfileAndCustomPresetAreStoredLocally() = runBlocking {
+        val store = (context.applicationContext as AudioFlowApp).store
+        val previous = store.sound.first()
+        val name = "테스트-" + UUID.randomUUID().toString().take(8)
+        val profile = SoundProfile(true, listOf(3, 1, 0, -2, 2), SoundSpace.Headphones, 55)
+        try {
+            store.setSound(profile)
+            assertEquals(profile, store.sound.first())
+            assertTrue(store.saveSoundPreset(name, profile))
+            assertEquals(profile, store.soundPresets.first().single { it.name == name }.profile)
+            val replacement = profile.copy(space = SoundSpace.Wide)
+            assertTrue(store.saveSoundPreset(name, replacement))
+            assertEquals(replacement, store.soundPresets.first().single { it.name == name }.profile)
+        } finally {
+            store.removeSoundPreset(name)
+            store.setSound(previous)
+        }
+        assertTrue(store.soundPresets.first().none { it.name == name })
+    }
+
     @Test fun radioStartsWithoutSongSelectionAndRestoresPriorQueueOnStop() = runBlocking {
         val previous = Track("jNQXAC9IVRw", "Me at the zoo", "jawed", seconds = 19)
         ActivityScenario.launch(MainActivity::class.java).use {

@@ -1,10 +1,10 @@
-# AudioFlow 1.5.0
+# AudioFlow 1.6.0
 
 AudioFlow는 Google 계정 없이 공개 YouTube 콘텐츠의 오디오를 듣는 개인용 Android 앱입니다. Android 8.0(API 26) 이상을 대상으로 합니다. 검색과 스트리밍에는 인터넷 연결이 필요합니다. 즐겨찾기, 재생 기록, 위치, 플레이리스트, 대기열 및 설정은 기기에 저장됩니다.
 
 ## 설치와 사용
 
-1. [GitHub 릴리스의 개인 설치용 APK](https://github.com/LibraLightLuda/AudioFlow/releases/download/v1.5.0/AudioFlow-1.5.0.apk)를 받아 휴대전화에서 엽니다. 기존 버전이 설치돼 있으면 업데이트합니다. USB 디버깅을 사용한다면 APK를 내려받은 폴더에서 `adb install -r AudioFlow-1.5.0.apk`를 실행하세요.
+1. [GitHub 릴리스의 개인 설치용 APK](https://github.com/LibraLightLuda/AudioFlow/releases/download/v1.6.0/AudioFlow-1.6.0.apk)를 받아 휴대전화에서 엽니다. 기존 버전이 설치돼 있으면 업데이트합니다. USB 디버깅을 사용한다면 APK를 내려받은 폴더에서 `adb install -r AudioFlow-1.6.0.apk`를 실행하세요.
 2. 홈의 **노래** 검색은 YouTube Music과 일반 동영상 검색 결과를 합쳐 관련 공식 뮤직비디오·음원을 먼저 표시합니다. **전체**와 **채널** 필터도 사용할 수 있습니다. YouTube에서 영상의 **공유 → AudioFlow**를 선택하면 해당 영상이 바로 재생됩니다.
 3. 채널을 열면 공개 동영상·뮤직비디오, 플레이리스트, Shorts 중 채널이 제공하는 목록을 볼 수 있습니다. 목록 끝의 **더 보기**로 다음 항목을 불러오고, 공개 플레이리스트를 열어 **내 플레이리스트로 저장**하면 로컬 복사본이 생깁니다.
 4. 검색 결과에서 골라 재생하거나 공유로 바로 재생한 곡은 라이브러리의 **기본 플레이리스트**에 자동 추가됩니다. 곡 옵션의 **YouTube에서 채널 열기**는 YouTube 앱을 우선 사용하고, 설치되지 않았다면 브라우저에서 엽니다.
@@ -16,6 +16,16 @@ AudioFlow는 Google 계정 없이 공개 YouTube 콘텐츠의 오디오를 듣�
 10. 설정에서 즐겨찾기와 플레이리스트를 JSON으로 내보내거나 병합할 수 있습니다. 가져오기 전에 추가·중복 수를 표시합니다. 기존 곡 정보와 목록 순서를 보존하며 재생 기록, 대기열, 계정 정보, 스트림 URL은 백업에 포함하지 않습니다.
 11. **다음 곡 미리 준비**와 **관련 곡 이어 재생**은 설정에서 각각 켭니다. 다음 곡 준비는 데이터 사용량이 제한되지 않은 연결에서 현재 버퍼가 충분할 때 동작합니다. 관련 곡은 같은 목록이나 채널에서 아직 듣지 않은 곡을 선택합니다.
 12. 재생이 실패하면 현재 곡과 위치를 유지한 채 재시도하거나 다음 곡을 재생하거나 YouTube에서 열 수 있습니다. **가사·자막**에서 현재 줄을 강조하고 시간 표시가 있는 줄을 눌러 이동할 수 있습니다.
+
+## 음향 설정
+
+**전체 플레이어 → 음향 설정** 또는 **설정 → 음향 설정**에서 재생 중 조절할 수 있습니다. 이퀄라이저는 80 Hz, 250 Hz, 1 kHz, 4 kHz, 12 kHz를 각각 −9에서 +9 dB까지 조절합니다. 원음, 저음 강조, 보컬 선명, 록, 재즈, 클래식, 팟캐스트, 넓은 스테레오, 헤드폰 공간감의 기본 프리셋 9개와 사용자 프리셋 최대 12개를 지원합니다.
+
+- **스테레오 확장**은 좌우 차이를 조절합니다. **헤드폰 공간감**은 좌우에 짧은 지연음과 필터를 섞습니다. 두 효과 모두 스테레오 신호에서 강도를 조절할 수 있습니다.
+- **기기 공간 음향**은 Android의 공간 음향 설정을 사용합니다. 실제 공간 처리는 지원 기기, 현재 출력 장치와 콘텐츠 형식에 따라 달라집니다. Android 12L 이상에서는 현재 출력의 스테레오 처리 가능 여부를 표시합니다. [Android 공간 음향 문서](https://developer.android.com/media/grow/spatial-audio)
+- 효과는 AudioFlow의 Media3 재생 경로에 적용합니다. 프리셋과 마지막 음향 설정은 기기에 저장합니다. 부스트나 공간 효과를 켜면 과도한 출력 피크를 줄이기 위해 전체 레벨을 낮출 수 있습니다.
+
+5밴드 EQ는 Robert Bristow-Johnson의 공개 피킹 필터 공식을 적용했습니다. 공간 효과 설계에서는 FFmpeg의 스테레오 확장 필터와 RootlessJamesDSP를 검토했습니다. 앱의 PCM 처리는 Media3 오디오 프로세서에서 Kotlin으로 실행합니다. [Audio EQ Cookbook](https://www.w3.org/TR/audio-eq-cookbook/) · [FFmpeg stereowiden](https://github.com/FFmpeg/FFmpeg/blob/master/libavfilter/af_stereowiden.c) · [RootlessJamesDSP](https://github.com/timschneeb/RootlessJamesDSP)
 
 ## AudioFlow 라디오
 

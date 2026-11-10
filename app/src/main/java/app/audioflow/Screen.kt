@@ -142,6 +142,7 @@ internal fun AudioFlowScreen(
     var playlistId by rememberSaveable { mutableStateOf<Long?>(null) }
     var playerOpen by rememberSaveable { mutableStateOf(false) }
     var queueOpen by rememberSaveable { mutableStateOf(false) }
+    var soundOpen by rememberSaveable { mutableStateOf(false) }
     var playlistPicker by remember { mutableStateOf<Track?>(null) }
     var createList by rememberSaveable { mutableStateOf(false) }
     var clearHistory by rememberSaveable { mutableStateOf(false) }
@@ -348,7 +349,7 @@ internal fun AudioFlowScreen(
                     modifier, playback, controller, deadline, favoriteIds, callbacks,
                     queueOpen, { queueOpen = it }, { playerOpen = false; queueOpen = false },
                     { saveQueue = playback.queue }, autoplayTrack?.takeIf { it.first == playback.current?.id }?.second,
-                    radio, ::startRadio, ::stopRadio,
+                    radio, ::startRadio, ::stopRadio, { soundOpen = true },
                 )
                 page == Page.Home -> HomeScreen(modifier, search, history.map { it.track },
                     callbacks, ::play, ::removeHistory, ::importPlaylist, importing, connectionError, connect,
@@ -368,10 +369,12 @@ internal fun AudioFlowScreen(
                     )
                 }
                 else -> SettingsScreen(modifier, dark, { update { store.setDark(it) } },
-                    { clearHistory = true }, controller, playback, deadline, store, radio.phase != RadioPhase.Off)
+                    { clearHistory = true }, controller, playback, deadline, store, radio.phase != RadioPhase.Off,
+                    { soundOpen = true })
             }
         }
 
+        if (soundOpen) SoundControls(app) { soundOpen = false }
         playlistPicker?.let { track ->
             AlertDialog(
                 onDismissRequest = { playlistPicker = null },
@@ -904,6 +907,7 @@ private fun PlayerScreen(
     modifier: Modifier, state: PlaybackUi, controller: MediaController?, deadline: Long,
     favorites: Set<String>, actions: TrackActions, showQueue: Boolean, setQueue: (Boolean) -> Unit, close: () -> Unit,
     saveQueue: () -> Unit, autoplayReason: String?, radio: RadioUi, startRadio: () -> Unit, stopRadio: () -> Unit,
+    openSound: () -> Unit,
 ) {
     val current = state.current
     val context = LocalContext.current
@@ -1057,6 +1061,7 @@ private fun PlayerScreen(
                     }) { Text("YouTube에서 열기") }
                 }
                 PlaybackOptions(controller, state, deadline, radio.phase != RadioPhase.Off)
+                OutlinedButton(onClick = openSound) { Text("음향 설정") }
                 CaptionPanel(current.id, state.position, state.seekable) { controller?.seekTo(it) }
                 TextButton(onClick = { controller?.sendCustomCommand(StopPlayback, Bundle.EMPTY) },
                     enabled = controller != null) { Text("재생 종료") }
@@ -1141,6 +1146,7 @@ private fun PlaybackOptions(controller: MediaController?, state: PlaybackUi, dea
 private fun SettingsScreen(
     modifier: Modifier, dark: Boolean, setDark: (Boolean) -> Unit, clearHistory: () -> Unit,
     controller: MediaController?, playback: PlaybackUi, deadline: Long, store: LocalStore, radioActive: Boolean,
+    openSound: () -> Unit,
 ) {
     val autoplay by store.autoplay.collectAsStateWithLifecycle(false)
     val preload by store.preload.collectAsStateWithLifecycle(false)
@@ -1150,6 +1156,9 @@ private fun SettingsScreen(
             Headline("PREFERENCES", "설정", "재생 방식과 기기에 저장된 정보를 관리해요.")
             SectionTitle("재생", 0)
             PlaybackOptions(controller, playback, deadline, radioActive)
+            ListItem(headlineContent = { Text("음향 설정") },
+                supportingContent = { Text("이퀄라이저 · 공간 음향 · 프리셋") },
+                modifier = Modifier.clickable(onClick = openSound))
             Text("오디오 전용 스트림을 먼저 사용해요. 제공되지 않으면 영상이 포함된 스트림에서 소리만 재생해요.",
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             ListItem(headlineContent = { Text("다음 곡 미리 준비") },

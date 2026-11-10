@@ -10,6 +10,7 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
@@ -53,7 +54,7 @@ private fun Context.verifyUpdateApk(apk: File, expected: ReleaseVersion, install
 
 @Suppress("DEPRECATION")
 @Composable
-internal fun UpdateControls() {
+internal fun UpdateControls(openInstalledNotes: (() -> Unit)?) {
     val context = LocalContext.current
     val manager = context.packageManager
     val installed = remember(context) { manager.getPackageInfo(context.packageName, signingFlags()) }
@@ -128,12 +129,9 @@ internal fun UpdateControls() {
             }
         }) { Text("최신 버전 확인") }
         TextButton(onClick = {
-            try {
-                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(RELEASE_PAGE)))
-            } catch (_: android.content.ActivityNotFoundException) {
-                status = "GitHub 주소를 열 브라우저가 없어요."
-            }
+            if (!openGithubRelease(context)) status = "GitHub 주소를 열 브라우저가 없어요."
         }) { Text("GitHub 릴리스 열기") }
+        if (openInstalledNotes != null) TextButton(onClick = openInstalledNotes) { Text("이번 버전 변경사항") }
         if (pending != null) TextButton(enabled = !busy, onClick = { runUpdate { requestInstall() } }) { Text("설치 계속") }
     }
     if (busy) {
@@ -148,7 +146,13 @@ internal fun UpdateControls() {
         AlertDialog(
             onDismissRequest = { offer = null },
             title = { Text("AudioFlow ${update.version} 업데이트") },
-            text = { Text("GitHub에서 APK를 내려받고 Android 설치 화면을 열어요. 설치는 Android 화면에서 확인해 주세요.") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ReleaseNotesBody(update.notes)
+                    Text("설치는 Android 화면에서 확인해 주세요.")
+                    TextButton(onClick = { openGithubRelease(context, update.version) }) { Text("GitHub에서 자세히 보기") }
+                }
+            },
             confirmButton = {
                 TextButton(enabled = !busy, onClick = {
                     offer = null

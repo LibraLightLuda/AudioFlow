@@ -143,6 +143,10 @@ internal fun AudioFlowScreen(
     var playerOpen by rememberSaveable { mutableStateOf(false) }
     var queueOpen by rememberSaveable { mutableStateOf(false) }
     var soundOpen by rememberSaveable { mutableStateOf(false) }
+    var releaseNotesOpen by rememberSaveable { mutableStateOf(false) }
+    val installedNotes by produceState<InstalledReleaseNotes?>(null, context) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { installedReleaseNotes(context) }
+    }
     var playlistPicker by remember { mutableStateOf<Track?>(null) }
     var createList by rememberSaveable { mutableStateOf(false) }
     var clearHistory by rememberSaveable { mutableStateOf(false) }
@@ -154,6 +158,13 @@ internal fun AudioFlowScreen(
     var importing by remember { mutableStateOf(false) }
     var excludeTrack by remember { mutableStateOf<Track?>(null) }
     var cleanup by remember { mutableStateOf<Pair<Long?, List<Track>>?>(null) }
+
+    LaunchedEffect(installedNotes) {
+        val release = installedNotes ?: return@LaunchedEffect
+        val seen = store.lastSeenReleaseNotes()
+        if (shouldShowReleaseNotes(release.versionCode, seen, release.updated)) releaseNotesOpen = true
+        else if (seen == null) store.markReleaseNotesSeen(release.versionCode)
+    }
 
     DisposableEffect(controller) {
         if (controller == null) return@DisposableEffect onDispose {}
@@ -370,11 +381,27 @@ internal fun AudioFlowScreen(
                 }
                 else -> SettingsScreen(modifier, dark, { update { store.setDark(it) } },
                     { clearHistory = true }, controller, playback, deadline, store, radio.phase != RadioPhase.Off,
-                    { soundOpen = true })
+                    { soundOpen = true },
+                    if (installedNotes != null) ({ releaseNotesOpen = true }) else null)
             }
         }
 
         if (soundOpen) SoundControls(app) { soundOpen = false }
+        installedNotes?.takeIf { releaseNotesOpen }?.let { release ->
+            fun acknowledge() {
+                releaseNotesOpen = false
+                app.scope.launch { runCatching { store.markReleaseNotesSeen(release.versionCode) } }
+            }
+            AlertDialog(onDismissRequest = ::acknowledge,
+                title = { Text("AudioFlow ${release.version} 변경사항") },
+                text = { ReleaseNotesBody(release.body) },
+                confirmButton = { TextButton(onClick = ::acknowledge) { Text("확인") } },
+                dismissButton = {
+                    TextButton(onClick = {
+                        if (!openGithubRelease(context, release.version)) toast("GitHub 주소를 열 브라우저가 없어요.")
+                    }) { Text("GitHub에서 보기") }
+                })
+        }
         playlistPicker?.let { track ->
             AlertDialog(
                 onDismissRequest = { playlistPicker = null },
@@ -1146,7 +1173,7 @@ private fun PlaybackOptions(controller: MediaController?, state: PlaybackUi, dea
 private fun SettingsScreen(
     modifier: Modifier, dark: Boolean, setDark: (Boolean) -> Unit, clearHistory: () -> Unit,
     controller: MediaController?, playback: PlaybackUi, deadline: Long, store: LocalStore, radioActive: Boolean,
-    openSound: () -> Unit,
+    openSound: () -> Unit, openInstalledNotes: (() -> Unit)?,
 ) {
     val autoplay by store.autoplay.collectAsStateWithLifecycle(false)
     val preload by store.preload.collectAsStateWithLifecycle(false)
@@ -1178,7 +1205,7 @@ private fun SettingsScreen(
                 supportingContent = { Text("최근 재생과 트랙별 재생 위치를 삭제해요.") },
                 modifier = Modifier.clickable(onClick = clearHistory))
             SectionTitle("앱 업데이트", 0)
-            UpdateControls()
+            UpdateControls(openInstalledNotes)
         }
     }
 }

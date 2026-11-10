@@ -12,8 +12,8 @@ android {
         applicationId 'app.audioflow'
         minSdk 26
         targetSdk 36
-        versionCode 8
-        versionName '1.6.0'
+        versionCode 9
+        versionName '1.7.0'
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
     buildFeatures { compose true }
@@ -28,6 +28,22 @@ android {
     }
 }
 kotlin { jvmToolchain(17) }
+
+def releaseNotesFile = layout.projectDirectory.file('src/main/assets/whats-new.md')
+def releaseNotesVersion = android.defaultConfig.versionName
+def checkReleaseNotes = tasks.register('checkReleaseNotes') {
+    inputs.file(releaseNotesFile)
+    inputs.property('versionName', releaseNotesVersion)
+    doLast {
+        def file = releaseNotesFile.asFile
+        def lines = file.readLines('UTF-8')
+        if (file.length() > 16384 || lines.isEmpty() ||
+                lines[0] != "## AudioFlow ${releaseNotesVersion}" || lines.drop(1).join('\n').trim().isEmpty()) {
+            throw new GradleException("Update src/main/assets/whats-new.md for AudioFlow ${releaseNotesVersion}.")
+        }
+    }
+}
+tasks.named('preBuild').configure { dependsOn(checkReleaseNotes) }
 
 dependencies {
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs_nio:2.1.5'

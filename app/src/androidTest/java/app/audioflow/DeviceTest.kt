@@ -29,6 +29,15 @@ import org.junit.runner.RunWith
 class DeviceTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
 
+    @Suppress("DEPRECATION")
+    @Test fun installedReleaseContainsOfflineNotesForItsOwnVersion() {
+        val info = context.packageManager.getPackageInfo(context.packageName, 0)
+        val notes = checkNotNull(installedReleaseNotes(context))
+        assertEquals(info.versionName, notes.version.toString())
+        assertEquals(androidx.core.content.pm.PackageInfoCompat.getLongVersionCode(info), notes.versionCode)
+        assertTrue(notes.body.isNotBlank())
+    }
+
     @Test fun soundProfileAndCustomPresetAreStoredLocally() = runBlocking {
         val store = (context.applicationContext as AudioFlowApp).store
         val previous = store.sound.first()
@@ -85,13 +94,14 @@ class DeviceTest {
     @Test fun updateMetadataRequiresNewStableReleaseAndOfficialAsset() {
         val installed = checkNotNull(ReleaseVersion.parse("1.9.0"))
         val newer = """
-            {"tag_name":"v1.10.0","draft":false,"prerelease":false,"assets":[{
+            {"tag_name":"v1.10.0","draft":false,"prerelease":false,"body":"- 릴리스 변경사항","assets":[{
             "name":"AudioFlow-1.10.0.apk","state":"uploaded","size":512,
             "digest":"sha256:${"a".repeat(64)}",
             "browser_download_url":"$RELEASE_REPOSITORY/releases/download/v1.10.0/AudioFlow-1.10.0.apk"
             }]}
         """.trimIndent()
         assertEquals("1.10.0", parseLatestUpdate(newer, installed)?.version.toString())
+        assertEquals("- 릴리스 변경사항", parseLatestUpdate(newer, installed)?.notes)
         assertEquals(null, parseLatestUpdate(newer, checkNotNull(ReleaseVersion.parse("1.10.0"))))
         listOf(newer.replace("prerelease\":false", "prerelease\":true"),
             newer.replace("$RELEASE_REPOSITORY/", "https://github.com/other/other/"),

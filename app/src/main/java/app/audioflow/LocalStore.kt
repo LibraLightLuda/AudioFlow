@@ -256,6 +256,7 @@ class LocalStore(context: Context) {
     private val preloadKey = booleanPreferencesKey("preload")
     private val soundKey = stringPreferencesKey("sound_profile")
     private val soundPresetsKey = stringSetPreferencesKey("sound_presets")
+    private val releaseNotesSeenKey = longPreferencesKey("release_notes_seen")
     private val data = settings.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }
     val dark = data.map { it[darkKey] ?: true }.distinctUntilChanged()
     val autoplay = data.map { it[autoplayKey] ?: false }.distinctUntilChanged()
@@ -277,6 +278,14 @@ class LocalStore(context: Context) {
     suspend fun setPreload(enabled: Boolean) { settings.edit { it[preloadKey] = enabled } }
 
     internal suspend fun setSound(profile: SoundProfile) { settings.edit { it[soundKey] = profile.encode() } }
+
+    internal suspend fun lastSeenReleaseNotes(): Long? = data.first()[releaseNotesSeenKey]
+
+    internal suspend fun markReleaseNotesSeen(versionCode: Long) {
+        settings.edit { prefs ->
+            if (versionCode > (prefs[releaseNotesSeenKey] ?: 0L)) prefs[releaseNotesSeenKey] = versionCode
+        }
+    }
 
     internal suspend fun saveSoundPreset(name: String, profile: SoundProfile): Boolean {
         require(name.isNotBlank() && name.length <= 28 && '|' !in name)

@@ -40,7 +40,7 @@ internal data class ReleaseVersion(val major: Int, val minor: Int, val patch: In
     }
 }
 
-internal data class UpdateAsset(val version: ReleaseVersion, val bytes: Long, val sha256: String) {
+internal data class UpdateAsset(val version: ReleaseVersion, val bytes: Long, val sha256: String, val notes: String = "") {
     val filename get() = "AudioFlow-$version.apk"
     val url get() = "$RELEASE_REPOSITORY/releases/download/v$version/$filename"
 }
@@ -60,7 +60,8 @@ internal fun parseLatestUpdate(json: String, installed: ReleaseVersion): UpdateA
     val entry = entries.singleOrNull() ?: throw UpdateException("릴리스에 일치하는 설치용 APK가 없어요.")
     val bytes = entry.optLong("size")
     val digest = entry.optString("digest")
-    val asset = UpdateAsset(version, bytes, digest.removePrefix("sha256:"))
+    val notes = (release.opt("body") as? String).orEmpty().take(RELEASE_NOTES_DISPLAY_LIMIT)
+    val asset = UpdateAsset(version, bytes, digest.removePrefix("sha256:"), notes)
     if (entry.optString("state") != "uploaded" || entry.optString("browser_download_url") != asset.url ||
         bytes !in 1..MAX_APK_BYTES || !APK_DIGEST.matches(digest)) {
         throw UpdateException("공식 APK의 주소, 크기 또는 무결성 정보가 올바르지 않아요.")

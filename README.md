@@ -31,9 +31,28 @@ $env:AUDIOFLOW_LIVE = '1'
 
 - 1.2.1은 검색·재생·자막·화면/알림 이미지의 HTTP 요청에 쿠키·인증 헤더 제거, 목적별 HTTPS 호스트 제한, 이동 전 리디렉션 검사를 적용합니다. 민감한 오류 로그와 HTTP 디스크 캐시도 줄였습니다. IP 및 요청 방식은 YouTube에 보이며 익명성이나 제재 방지를 보장하지 않습니다. [보호 범위와 남는 한계](SECURITY.md)
 - Kotlin, Compose Material 3, Media3 1.9.2, Room, DataStore, Coroutines/Flow를 사용합니다. 콘텐츠 조회는 `Catalog` 인터페이스와 NewPipeExtractor 어댑터로 분리했습니다.
-- [NewPipeExtractor v0.27.0](https://github.com/TeamNewPipe/NewPipeExtractor/releases/tag/v0.27.0)을 고정했습니다. 해당 버전은 Java 17을 사용하며 GPL-3.0-or-later입니다. 이 프로젝트의 소스도 GPL-3.0-or-later로 제공합니다. [라이선스 전문](LICENSE)
 - 오디오 전용 HTTP 스트림을 우선 사용합니다. 오디오 전용 스트림이 없는 경우 지원되는 결합 스트림에서 소리만 재생하므로 영상 데이터도 전송될 수 있습니다.
 - 일반 공개 VOD를 지원합니다. 라이브 방송, 공개 예정 콘텐츠, DRM, 구매·멤버십·로그인·연령 확인이 필요한 콘텐츠는 지원 범위 밖입니다. 공개 플레이리스트 한 번의 조회는 최대 100개이고, 재생 대기열 한 번의 구성은 최대 200개입니다.
 - 스트림 요청이 HTTP 403 또는 410으로 실패하면 스트림 주소를 한 번 다시 조회합니다. 요청 제한과 접근 거부는 화면에 표시합니다. 서명된 스트림 URL은 기기에 저장하지 않습니다.
 - Media3 재생 버퍼의 RAM 목표는 8 MiB입니다. 임시 스트림 캐시는 최대 24 MiB이며 오래 사용하지 않은 조각부터 비웁니다. 연결 오류나 일시적인 서버 오류에는 최대 4회 재시도합니다. 끊김을 버틸 수 있는 시간은 미리 받은 데이터와 음원 비트레이트에 따라 달라집니다.
 - 비공식 조회 방식은 YouTube 이용약관과 충돌할 수 있고, YouTube의 응답 형식이나 익명 접근 정책이 변경되면 검색 또는 재생이 중단될 수 있습니다. [YouTube 이용약관](https://www.youtube.com/t/terms)
+
+## 라이브러리와 출처
+
+버전은 [앱의 Gradle 설정](app/build.gradle)을 기준으로 기록했습니다. OkHttp는 Media3와 Coil을 통해 들어오며 릴리스 빌드에서 4.12.0이 선택됩니다.
+
+| 라이브러리 | AudioFlow에서 사용하는 부분 | 공식 소스 |
+| --- | --- | --- |
+| NewPipeExtractor v0.27.0 | 검색, 영상·채널·플레이리스트 조회, 공개 스트림과 자막 정보 추출. `com.github.TeamNewPipe:NewPipeExtractor:v0.27.0`을 [JitPack](https://jitpack.io)에서 받습니다. | [TeamNewPipe/NewPipeExtractor v0.27.0](https://github.com/TeamNewPipe/NewPipeExtractor/releases/tag/v0.27.0) |
+| AndroidX Media3 1.9.2 | ExoPlayer 재생, MediaSessionService, 미디어 캐시, OkHttp 데이터 소스. 직접 의존성은 `media3-exoplayer`, `media3-session`, `media3-datasource-okhttp`입니다. | [androidx/media 1.9.2](https://github.com/androidx/media/releases/tag/1.9.2) |
+| OkHttp 4.12.0 | 검색, 재생, 자막, 이미지의 HTTP 연결과 요청 검증. | [OkHttp 4.12.0 소스](https://github.com/lysine-dev/okhttp/tree/parent-4.12.0) |
+| Coil Compose 2.7.0 | Compose 화면의 썸네일 로딩. | [coil-kt/coil 2.7.0](https://github.com/coil-kt/coil/releases/tag/2.7.0) |
+| Jetpack Compose BOM 2025.12.00, Material 3, Activity Compose 1.12.2, Lifecycle Runtime Compose 2.10.0 | 앱 화면, 아이콘, Activity 연결, 수명주기에 따른 상태 구독. | [AndroidX 소스](https://github.com/androidx/androidx) |
+| Room 2.8.4, DataStore Preferences 1.2.0 | 기록, 즐겨찾기와 플레이리스트를 Room에, 대기열과 앱 설정을 DataStore에 저장. | [AndroidX 소스](https://github.com/androidx/androidx) |
+| kotlinx-coroutines-android 1.10.2 | 비동기 조회, 재생 상태와 로컬 데이터의 Flow 처리. | [Kotlin/kotlinx.coroutines](https://github.com/Kotlin/kotlinx.coroutines) |
+| KSP 2.2.21-2.0.4, desugar_jdk_libs_nio 2.1.5 | Room 코드 생성과 낮은 Android 버전에서의 Java API 호환. | [KSP](https://github.com/google/ksp), [Desugar JDK Libraries](https://github.com/google/desugar_jdk_libs) |
+| JUnit 4.13.2, AndroidX Test JUnit 1.3.0 및 Runner 1.7.0 | JVM 단위 테스트와 Android 기기 테스트. | [JUnit 4](https://github.com/junit-team/junit4), [AndroidX Test](https://github.com/android/android-test) |
+
+콘텐츠 조회는 [Catalog.kt](app/src/main/java/app/audioflow/Catalog.kt)에서 NewPipeExtractor를 호출합니다. 재생과 네트워크 보호를 구현할 때 참고한 Android 공식 문서는 [Media3 네트워크 스택](https://developer.android.com/media/media3/exoplayer/network-stacks), [네트워크 보안 구성](https://developer.android.com/privacy-and-security/security-config), [알림 이미지 로더](https://developer.android.com/reference/kotlin/androidx/media3/datasource/DataSourceBitmapLoader)입니다. 적용 범위는 [SECURITY.md](SECURITY.md)에 기록했습니다.
+
+AudioFlow는 GPL-3.0-or-later로 배포합니다. [AudioFlow 라이선스](LICENSE)와 [NewPipeExtractor 라이선스](https://github.com/TeamNewPipe/NewPipeExtractor/blob/v0.27.0/LICENSE)를 확인할 수 있습니다.

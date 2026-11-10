@@ -1,10 +1,10 @@
-# AudioFlow 1.4.0
+# AudioFlow 1.5.0
 
 AudioFlow는 Google 계정 없이 공개 YouTube 콘텐츠의 오디오를 듣는 개인용 Android 앱입니다. Android 8.0(API 26) 이상을 대상으로 합니다. 검색과 스트리밍에는 인터넷 연결이 필요합니다. 즐겨찾기, 재생 기록, 위치, 플레이리스트, 대기열 및 설정은 기기에 저장됩니다.
 
 ## 설치와 사용
 
-1. [GitHub 릴리스의 개인 설치용 APK](https://github.com/LibraLightLuda/AudioFlow/releases/download/v1.4.0/AudioFlow-1.4.0.apk)를 받아 휴대전화에서 엽니다. 기존 버전이 설치돼 있으면 업데이트합니다. USB 디버깅을 사용한다면 APK를 내려받은 폴더에서 `adb install -r AudioFlow-1.4.0.apk`를 실행하세요.
+1. [GitHub 릴리스의 개인 설치용 APK](https://github.com/LibraLightLuda/AudioFlow/releases/download/v1.5.0/AudioFlow-1.5.0.apk)를 받아 휴대전화에서 엽니다. 기존 버전이 설치돼 있으면 업데이트합니다. USB 디버깅을 사용한다면 APK를 내려받은 폴더에서 `adb install -r AudioFlow-1.5.0.apk`를 실행하세요.
 2. 홈의 **노래** 검색은 YouTube Music과 일반 동영상 검색 결과를 합쳐 관련 공식 뮤직비디오·음원을 먼저 표시합니다. **전체**와 **채널** 필터도 사용할 수 있습니다. YouTube에서 영상의 **공유 → AudioFlow**를 선택하면 해당 영상이 바로 재생됩니다.
 3. 채널을 열면 공개 동영상·뮤직비디오, 플레이리스트, Shorts 중 채널이 제공하는 목록을 볼 수 있습니다. 목록 끝의 **더 보기**로 다음 항목을 불러오고, 공개 플레이리스트를 열어 **내 플레이리스트로 저장**하면 로컬 복사본이 생깁니다.
 4. 검색 결과에서 골라 재생하거나 공유로 바로 재생한 곡은 라이브러리의 **기본 플레이리스트**에 자동 추가됩니다. 곡 옵션의 **YouTube에서 채널 열기**는 YouTube 앱을 우선 사용하고, 설치되지 않았다면 브라우저에서 엽니다.
@@ -16,6 +16,16 @@ AudioFlow는 Google 계정 없이 공개 YouTube 콘텐츠의 오디오를 듣�
 10. 설정에서 즐겨찾기와 플레이리스트를 JSON으로 내보내거나 병합할 수 있습니다. 가져오기 전에 추가·중복 수를 표시합니다. 기존 곡 정보와 목록 순서를 보존하며 재생 기록, 대기열, 계정 정보, 스트림 URL은 백업에 포함하지 않습니다.
 11. **다음 곡 미리 준비**와 **관련 곡 이어 재생**은 설정에서 각각 켭니다. 다음 곡 준비는 데이터 사용량이 제한되지 않은 연결에서 현재 버퍼가 충분할 때 동작합니다. 관련 곡은 같은 목록이나 채널에서 아직 듣지 않은 곡을 선택합니다.
 12. 재생이 실패하면 현재 곡과 위치를 유지한 채 재시도하거나 다음 곡을 재생하거나 YouTube에서 열 수 있습니다. **가사·자막**에서 현재 줄을 강조하고 시간 표시가 있는 줄을 눌러 이동할 수 있습니다.
+
+## AudioFlow 라디오
+
+홈의 **라디오 시작**을 누르면 곡을 지정하지 않아도 추천곡을 재생합니다. 즐겨찾기와 최근 재생에서 자주 듣는 채널과 제목 단어를 찾고, 기록이 없으면 K-pop·인디·팝·록 등 여러 장르의 공개 검색으로 시작합니다. 다음 곡이 두 곡 이하로 남으면 대기열을 채우고 지나간 항목을 정리합니다.
+
+후보의 관련성과 다양성을 함께 고려하는 **MMR 재정렬**을 Kotlin으로 적용했습니다. 같은 곡의 제목 변형과 최근에 들은 곡을 제외하고, 같은 채널이나 제목이 비슷한 곡이 이어질 가능성을 낮춥니다. 모델 학습 서버 없이 동작합니다. [MMR 원 논문](https://www.cs.cmu.edu/afs/cs/Web/People/jgc/publication/MMR_DiversityBased_Reranking_SIGIR_1998.pdf) · [추천 후보 생성과 재정렬](https://developers.google.com/machine-learning/recommendation/dnn/re-ranking)
+
+공개 프로젝트 중 [Recommenders](https://github.com/recommenders-team/recommenders), [LightFM](https://github.com/lyst/lightfm), [Spotify Annoy](https://github.com/spotify/annoy)를 검토했습니다. 협업 필터링 모델에는 여러 사용자의 상호작용 데이터가 필요하고, Annoy는 벡터 검색용입니다. AudioFlow는 소규모 후보를 바로 비교할 수 있어 MMR을 선택했습니다.
+
+점수 계산은 기기 안에서 수행합니다. 공개 YouTube에 보내는 검색어는 장르 또는 자주 듣는 공개 채널의 이름입니다. 라디오를 끄면 시작 전 대기열과 재생 위치가 복원됩니다. 요청 제한이 걸리면 자동 검색을 멈추고, 후보가 없거나 일시적으로 검색이 실패하면 한 번 기다렸다 다시 시도합니다.
 
 ## 앱 업데이트
 

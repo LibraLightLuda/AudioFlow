@@ -3,6 +3,7 @@ package app.audioflow
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.os.Bundle
 import androidx.media3.common.C
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
@@ -27,6 +28,39 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class DeviceTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
+
+    @Test fun radioStartsWithoutSongSelectionAndRestoresPriorQueueOnStop() = runBlocking {
+        val previous = Track("jNQXAC9IVRw", "Me at the zoo", "jawed", seconds = 19)
+        ActivityScenario.launch(MainActivity::class.java).use {
+            val future = withContext(Dispatchers.Main) {
+                MediaController.Builder(context, SessionToken(context, ComponentName(context, PlaybackService::class.java))).buildAsync()
+            }
+            val remote = future.get(15, TimeUnit.SECONDS)
+            try {
+                withContext(Dispatchers.Main) {
+                    remote.setMediaItems(listOf(previous.mediaItem()), 0, 3300L)
+                    remote.pause()
+                    withTimeout(5_000) { while (remote.currentMediaItem?.mediaId != previous.id) delay(50) }
+                    remote.sendCustomCommand(StartRadio, Bundle.EMPTY)
+                    withTimeout(75_000) {
+                        while (!remote.isPlaying || remote.currentMediaItem?.mediaId == previous.id) delay(100)
+                    }
+                    assertTrue(remote.mediaItemCount > 1)
+                    remote.sendCustomCommand(StopRadio, Bundle.EMPTY)
+                    withTimeout(5_000) {
+                        while (remote.currentMediaItem?.mediaId != previous.id || remote.isPlaying) delay(50)
+                    }
+                    assertEquals(3300L, remote.currentPosition)
+                }
+            } finally {
+                withContext(Dispatchers.Main) {
+                    remote.sendCustomCommand(StopRadio, Bundle.EMPTY)
+                    MediaController.releaseFuture(future)
+                }
+            }
+        }
+        Unit
+    }
 
     @Test fun updateMetadataRequiresNewStableReleaseAndOfficialAsset() {
         val installed = checkNotNull(ReleaseVersion.parse("1.9.0"))

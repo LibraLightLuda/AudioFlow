@@ -320,4 +320,5 @@ class AudioFlowApp : Application(), coil.ImageLoaderFactory {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val sleepDeadline = MutableStateFlow(0L)
     val autoplayTrack = MutableStateFlow<Pair<String, String>?>(null)
+    internal val radio = MutableStateFlow(RadioUi())
 }

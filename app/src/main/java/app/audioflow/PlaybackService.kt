@@ -34,6 +34,7 @@ import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import com.google.common.util.concurrent.Futures
+import kotlinx.coroutines.flow.first
 import java.io.IOException
 import java.io.EOFException
 import java.io.File
@@ -47,6 +48,8 @@ import kotlinx.coroutines.*
 internal val StopPlayback = SessionCommand("app.audioflow.STOP", Bundle.EMPTY)
 internal val SleepTimer = SessionCommand("app.audioflow.TIMER", Bundle.EMPTY)
 internal val RetryPlayback = SessionCommand("app.audioflow.RETRY", Bundle.EMPTY)
+internal val StartRadio = SessionCommand("app.audioflow.RADIO_START", Bundle.EMPTY)
+internal val StopRadio = SessionCommand("app.audioflow.RADIO_STOP", Bundle.EMPTY)
 private const val CHANNEL_URL = "app.audioflow.channelUrl"
 internal const val STREAM_CACHE_BYTES = 24L * 1024 * 1024
 internal const val STREAM_BUFFER_TARGET_BYTES = 8 * 1024 * 1024
@@ -84,6 +87,11 @@ class PlaybackService : MediaSessionService() {
     private var timerJob: Job? = null
     private var checkpoints: Job? = null
     private var autoJob: Job? = null
+    private var restoreJob: Job? = null
+    private var radioJob: Job? = null
+    private var radioMix: RadioMix? = null
+    private var manualQueue: QueueState? = null
+    private var radioErrors = 0
     private var autoplayEnabled = false
     private var preloadEnabled = false
     private var networkCallbackRegistered = false
@@ -180,7 +188,7 @@ class PlaybackService : MediaSessionService() {
         session = MediaSession.Builder(this, player).setBitmapLoader(privateArtworkLoader(this))
             .setSessionActivity(openApp).setCallback(callback).build()
 
-        scope.launch {
+        restoreJob = scope.launch {
             val queue = app.store.readQueue()
             if (player.mediaItemCount == 0) {
                 if (queue.tracks.isNotEmpty() && queue.tracks.all { YoutubeLink.isVideoId(it.id) }) {
@@ -221,7 +229,8 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
-            if (playbackState == Player.STATE_ENDED) startAutoplay()
+            if (playbackState == Player.STATE_ENDED && manualQueue == null &&
+                app.radio.value.phase != RadioPhase.Finding) startAutoplay()
             else autoJob?.cancel()
             updatePreload()
         }
@@ -237,6 +246,19 @@ class PlaybackService : MediaSessionService() {
                     return
                 }
             }
+            if (manualQueue != null && player.playWhenReady) {
+                val networkFailed = error.errorCode in setOf(PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+                    PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT)
+                if (!radioAccessLimited(error) && !networkFailed && streamStatus(error) != 429 &&
+                    ++radioErrors <= 2 && player.hasNextMediaItem()) {
+                    player.seekToNextMediaItem()
+                    player.prepare()
+                    return
+                }
+                radioJob?.cancel()
+                app.radio.value = RadioUi(RadioPhase.Stalled, playbackError(error))
+                player.pause()
+            }
             snapshot()
         }
 
@@ -245,6 +267,7 @@ class PlaybackService : MediaSessionService() {
             checkpoints?.cancel()
             checkpoints = null
             if (isPlaying) {
+                radioErrors = 0
                 recordCurrent()
                 checkpoints = scope.launch {
                     while (isActive) {
@@ -275,7 +298,14 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onEvents(player: Player, events: Player.Events) {
-            if (events.contains(Player.EVENT_PLAY_WHEN_READY_CHANGED) && !player.playWhenReady) autoJob?.cancel()
+            if (events.contains(Player.EVENT_PLAY_WHEN_READY_CHANGED) && !player.playWhenReady) {
+                autoJob?.cancel()
+                if (manualQueue != null && app.radio.value.phase != RadioPhase.Finding) radioJob?.cancel()
+            }
+            if (manualQueue != null && events.containsAny(Player.EVENT_PLAYBACK_STATE_CHANGED,
+                    Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_TIMELINE_CHANGED, Player.EVENT_PLAY_WHEN_READY_CHANGED)) {
+                fillRadio()
+            }
             if (events.containsAny(Player.EVENT_TIMELINE_CHANGED, Player.EVENT_MEDIA_ITEM_TRANSITION,
                     Player.EVENT_REPEAT_MODE_CHANGED, Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED)) updatePreload()
             if (events.containsAny(Player.EVENT_TIMELINE_CHANGED, Player.EVENT_MEDIA_ITEM_TRANSITION,
@@ -292,7 +322,7 @@ class PlaybackService : MediaSessionService() {
             val result = MediaSession.ConnectionResult.AcceptedResultBuilder(session)
             if (controller.uid == applicationInfo.uid) {
                 result.setAvailableSessionCommands(MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
-                    .add(StopPlayback).add(SleepTimer).add(RetryPlayback).build())
+                    .add(StopPlayback).add(SleepTimer).add(RetryPlayback).add(StartRadio).add(StopRadio).build())
             } else {
                 if (!controller.isTrusted && !session.isMediaNotificationController(controller)) {
                     return MediaSession.ConnectionResult.reject()
@@ -301,6 +331,19 @@ class PlaybackService : MediaSessionService() {
                     .remove(Player.COMMAND_CHANGE_MEDIA_ITEMS).remove(Player.COMMAND_SET_MEDIA_ITEM).build())
             }
             return result.build()
+        }
+
+        override fun onSetMediaItems(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: List<MediaItem>,
+            startIndex: Int,
+            startPositionMs: Long,
+        ): com.google.common.util.concurrent.ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+            if (controller.uid == applicationInfo.uid && mediaItems.take(200).any { YoutubeLink.isVideoId(it.mediaId) }) {
+                endRadio(restore = false)
+            }
+            return super.onSetMediaItems(mediaSession, controller, mediaItems, startIndex, startPositionMs)
         }
 
         override fun onAddMediaItems(
@@ -318,6 +361,7 @@ class PlaybackService : MediaSessionService() {
         ) = Futures.immediateFuture(SessionResult(when {
             controller.uid != applicationInfo.uid -> SessionResult.RESULT_ERROR_PERMISSION_DENIED
             command.customAction == StopPlayback.customAction -> {
+                endRadio(restore = true)
                 player.pause()
                 player.stop()
                 lastHistoryId = null
@@ -332,14 +376,132 @@ class PlaybackService : MediaSessionService() {
             }
             command.customAction == RetryPlayback.customAction -> {
                 if (player.playerError != null && player.currentMediaItem != null) {
+                    if (manualQueue != null) {
+                        app.radio.value = RadioUi(RadioPhase.On)
+                        radioErrors = 0
+                    }
                     retryUsed = false
                     player.prepare()
                     player.play()
                 }
                 SessionResult.RESULT_SUCCESS
             }
+            command.customAction == StartRadio.customAction -> {
+                startRadio()
+                SessionResult.RESULT_SUCCESS
+            }
+            command.customAction == StopRadio.customAction -> {
+                endRadio(restore = true)
+                SessionResult.RESULT_SUCCESS
+            }
             else -> SessionResult.RESULT_ERROR_NOT_SUPPORTED
         }))
+    }
+
+    private fun startRadio() {
+        if (app.radio.value.phase !in setOf(RadioPhase.Off, RadioPhase.Stalled)) return
+        radioJob?.cancel()
+        autoJob?.cancel()
+        app.radio.value = RadioUi(RadioPhase.Finding)
+        radioJob = scope.launch {
+            try {
+                restoreJob?.join()
+                val dao = app.store.dao
+                val mix = RadioMix(dao.favorites().first().take(20).map { it.track }, dao.history().first().take(30).map { it.track })
+                val first = selectRadio(mix, emptyList(), starting = true)
+                if (manualQueue == null) {
+                    snapshot()
+                    manualQueue = queueState()
+                }
+                radioMix = mix
+                radioErrors = 0
+                player.pause()
+                player.repeatMode = Player.REPEAT_MODE_OFF
+                player.shuffleModeEnabled = false
+                player.setMediaItems(first.map { it.mediaItem() })
+                player.prepare()
+                player.play()
+                app.radio.value = RadioUi(RadioPhase.On)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                app.radio.value = RadioUi(RadioPhase.Stalled, catalogError(error))
+            }
+        }
+    }
+
+    private suspend fun selectRadio(mix: RadioMix, queued: List<Track>, starting: Boolean): List<Track> {
+        var failure: Exception? = null
+        repeat(2) { attempt ->
+            try {
+                val batch = mix.next(5, queued)
+                if (batch.isNotEmpty()) return batch
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (radioAccessLimited(error)) throw error
+                failure = error
+            }
+            if (attempt == 0) {
+                app.radio.value = RadioUi(if (starting) RadioPhase.Finding else RadioPhase.Waiting,
+                    "새 추천곡을 기다리는 중이에요. 잠시 뒤 한 번 더 찾아요.")
+                delay(20_000)
+            }
+        }
+        throw failure ?: CatalogException("지금은 재생할 새 추천곡을 찾지 못했어요. 라디오를 다시 시작할 수 있어요.")
+    }
+
+    private fun fillRadio() {
+        val mix = radioMix ?: return
+        if (app.radio.value.phase !in setOf(RadioPhase.On, RadioPhase.Waiting) ||
+            !player.playWhenReady || player.playerError != null || radioJob?.isActive == true) return
+        val removeBefore = (player.currentMediaItemIndex - 2).coerceAtLeast(0)
+        if (removeBefore > 0) player.removeMediaItems(0, removeBefore)
+        if (player.mediaItemCount - player.currentMediaItemIndex - 1 > 2) return
+        val queued = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).track() }
+        radioJob = scope.launch {
+            try {
+                val batch = selectRadio(mix, queued, starting = false)
+                if (radioMix !== mix || !player.playWhenReady || player.playerError != null) return@launch
+                val existing = (0 until player.mediaItemCount).mapTo(hashSetOf()) { player.getMediaItemAt(it).mediaId }
+                val next = batch.filterNot { it.id in existing }.take((200 - player.mediaItemCount).coerceAtLeast(0))
+                if (next.isEmpty()) {
+                    app.radio.value = RadioUi(RadioPhase.Stalled, "추가할 추천곡이 없어요. 라디오를 다시 시작할 수 있어요.")
+                    return@launch
+                }
+                val ended = player.playbackState == Player.STATE_ENDED
+                val first = player.mediaItemCount
+                player.addMediaItems(next.map { it.mediaItem() })
+                if (ended) player.seekToDefaultPosition(first)
+                app.radio.value = RadioUi(RadioPhase.On)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                app.radio.value = RadioUi(RadioPhase.Stalled, catalogError(error))
+            }
+        }
+    }
+
+    private fun endRadio(restore: Boolean) {
+        if (app.radio.value.phase == RadioPhase.Off) return
+        radioJob?.cancel()
+        radioMix = null
+        val saved = manualQueue
+        if (restore && saved != null) {
+            player.pause()
+            player.stop()
+            if (saved.tracks.isEmpty()) player.clearMediaItems()
+            else player.setMediaItems(saved.tracks.map { it.mediaItem() }, saved.index.coerceIn(saved.tracks.indices), saved.position)
+            lastHistoryId = null
+        }
+        if (saved != null) {
+            player.repeatMode = saved.repeat
+            player.shuffleModeEnabled = saved.shuffle
+            player.setPlaybackSpeed(saved.speed)
+        }
+        manualQueue = null
+        app.radio.value = RadioUi()
+        if (restore && saved != null) snapshot()
     }
 
     private fun updatePreload() {
@@ -398,6 +560,7 @@ class PlaybackService : MediaSessionService() {
         timerJob = if (minutes == 0) null else scope.launch {
             delay(duration)
             app.sleepDeadline.value = 0L
+            endRadio(restore = true)
             player.pause()
             player.stop()
             lastHistoryId = null
@@ -424,9 +587,7 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    private fun snapshot() {
-        if (!initialized) return
-        val state = QueueState(
+    private fun queueState() = QueueState(
             queueTracks ?: (0 until player.mediaItemCount).map { player.getMediaItemAt(it).track() }
                 .also { queueTracks = it },
             player.currentMediaItemIndex,
@@ -434,6 +595,10 @@ class PlaybackService : MediaSessionService() {
             player.playbackParameters.speed,
             player.repeatMode, player.shuffleModeEnabled,
         )
+
+    private fun snapshot() {
+        if (!initialized || manualQueue != null) return
+        val state = queueState()
         if (state == savedState) return
         savedState = state
         app.scope.launch {
@@ -452,6 +617,7 @@ class PlaybackService : MediaSessionService() {
         stopWatchingNetwork()
         scope.cancel()
         app.sleepDeadline.value = 0L
+        app.radio.value = RadioUi()
         player.removeListener(listener)
         session.release()
         player.release()

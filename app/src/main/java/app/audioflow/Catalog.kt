@@ -196,6 +196,10 @@ object YoutubeCatalog : Catalog {
         return entries(heading, info.relatedItems, info.errors)
     }
 
+    internal suspend fun radioSearch(query: String): CatalogResult = withContext(Dispatchers.IO) {
+        searchItems(query, YoutubeSearchQueryHandlerFactory.VIDEOS, "라디오 추천")
+    }
+
     private fun musicResults(query: String, filter: String): CatalogResult? = try {
         searchItems(query, filter, "노래 검색 결과")
     } catch (cancelled: CancellationException) {

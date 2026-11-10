@@ -133,6 +133,7 @@ internal fun AudioFlowScreen(
     }
     val deadline by app.sleepDeadline.collectAsStateWithLifecycle()
     val autoplayTrack by app.autoplayTrack.collectAsStateWithLifecycle()
+    val radio by app.radio.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
@@ -206,6 +207,13 @@ internal fun AudioFlowScreen(
                 snackbar.showSnackbar("기기에 변경 사항을 저장하지 못했어요.")
             }
         }
+    }
+    fun startRadio() {
+        playRequest?.cancel()
+        controller?.sendCustomCommand(StartRadio, Bundle.EMPTY)
+    }
+    fun stopRadio() {
+        controller?.sendCustomCommand(StopRadio, Bundle.EMPTY)
     }
     fun play(tracks: List<Track>, index: Int, saveSelection: Boolean = false) {
         val remote = controller ?: return toast("플레이어가 연결되는 중이에요.")
@@ -340,10 +348,12 @@ internal fun AudioFlowScreen(
                     modifier, playback, controller, deadline, favoriteIds, callbacks,
                     queueOpen, { queueOpen = it }, { playerOpen = false; queueOpen = false },
                     { saveQueue = playback.queue }, autoplayTrack?.takeIf { it.first == playback.current?.id }?.second,
+                    radio, ::startRadio, ::stopRadio,
                 )
                 page == Page.Home -> HomeScreen(modifier, search, history.map { it.track },
                     callbacks, ::play, ::removeHistory, ::importPlaylist, importing, connectionError, connect,
-                    playback, { controller?.togglePlay(); playerOpen = true })
+                    playback, { controller?.togglePlay(); playerOpen = true }, radio, controller != null,
+                    ::startRadio, ::stopRadio)
                 page == Page.Library -> {
                     val playlist = playlists.firstOrNull { it.id == playlistId }
                     val entries by remember(playlist?.id) { playlist?.let { dao.playlistTracks(it.id) }
@@ -358,7 +368,7 @@ internal fun AudioFlowScreen(
                     )
                 }
                 else -> SettingsScreen(modifier, dark, { update { store.setDark(it) } },
-                    { clearHistory = true }, controller, playback, deadline, store)
+                    { clearHistory = true }, controller, playback, deadline, store, radio.phase != RadioPhase.Off)
             }
         }
 
@@ -502,7 +512,8 @@ private fun HomeScreen(
     modifier: Modifier, search: SearchModel, history: List<Track>, actions: TrackActions,
     play: (List<Track>, Int, Boolean) -> Unit, removeHistory: (Track) -> Unit,
     importPlaylist: (CatalogResult) -> Unit, importing: Boolean, connectionError: Boolean, connect: () -> Unit,
-    playback: PlaybackUi, resume: () -> Unit,
+    playback: PlaybackUi, resume: () -> Unit, radio: RadioUi, radioReady: Boolean,
+    startRadio: () -> Unit, stopRadio: () -> Unit,
 ) {
     val focus = LocalFocusManager.current
     val results = search.result
@@ -525,6 +536,7 @@ private fun HomeScreen(
             if (browsing) TextButton(onClick = search::back) { Text("뒤로") }
             if (!browsing) {
                 Headline("AUDIOFLOW", "무엇을 들을까요?", "곡 제목, 유튜버 이름, @핸들 또는 YouTube 링크로 찾아보세요.")
+                RadioCard(radio, radioReady, startRadio, stopRadio)
                 OutlinedTextField(
                     value = search.query, onValueChange = { search.query = it.take(1500) },
                     modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
@@ -555,7 +567,7 @@ private fun HomeScreen(
                             label = { Text("Shorts 제외") })
                     }
                 }
-                if (!showingResults && !playback.playing && !playback.buffering) {
+                if (!showingResults && !playback.playing && !playback.buffering && radio.phase == RadioPhase.Off) {
                     playback.current?.let { track ->
                         val next = playback.queue.getOrNull(playback.index + 1)?.takeUnless { playback.shuffle }
                         Card(onClick = resume, modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
@@ -891,7 +903,7 @@ private fun MiniPlayer(track: Track, state: PlaybackUi, expand: () -> Unit, togg
 private fun PlayerScreen(
     modifier: Modifier, state: PlaybackUi, controller: MediaController?, deadline: Long,
     favorites: Set<String>, actions: TrackActions, showQueue: Boolean, setQueue: (Boolean) -> Unit, close: () -> Unit,
-    saveQueue: () -> Unit, autoplayReason: String?,
+    saveQueue: () -> Unit, autoplayReason: String?, radio: RadioUi, startRadio: () -> Unit, stopRadio: () -> Unit,
 ) {
     val current = state.current
     val context = LocalContext.current
@@ -912,6 +924,7 @@ private fun PlayerScreen(
                     fontSize = 11.sp, letterSpacing = 2.sp, fontWeight = FontWeight.Bold)
                 TextButton(onClick = { setQueue(!showQueue) }) { Text(if (showQueue) "재생 화면" else "대기열") }
             }
+            if (radio.phase != RadioPhase.Off) RadioCard(radio, controller != null, startRadio, stopRadio)
         }
         if (showQueue) {
             item {
@@ -1043,7 +1056,7 @@ private fun PlayerScreen(
                         }
                     }) { Text("YouTube에서 열기") }
                 }
-                PlaybackOptions(controller, state, deadline)
+                PlaybackOptions(controller, state, deadline, radio.phase != RadioPhase.Off)
                 CaptionPanel(current.id, state.position, state.seekable) { controller?.seekTo(it) }
                 TextButton(onClick = { controller?.sendCustomCommand(StopPlayback, Bundle.EMPTY) },
                     enabled = controller != null) { Text("재생 종료") }
@@ -1073,7 +1086,7 @@ private fun SeekBar(id: String, state: PlaybackUi, seek: (Long) -> Unit) {
 }
 
 @Composable
-private fun PlaybackOptions(controller: MediaController?, state: PlaybackUi, deadline: Long) {
+private fun PlaybackOptions(controller: MediaController?, state: PlaybackUi, deadline: Long, radioActive: Boolean) {
     var speeds by remember { mutableStateOf(false) }
     var timer by remember { mutableStateOf(false) }
     var minutesLeft by remember(deadline) { mutableLongStateOf(0L) }
@@ -1086,7 +1099,7 @@ private fun PlaybackOptions(controller: MediaController?, state: PlaybackUi, dea
     }
     FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)) {
         FilterChip(state.shuffle, { controller?.shuffleModeEnabled = !state.shuffle }, { Text("셔플") },
-            enabled = controller != null)
+            enabled = controller != null && !radioActive)
         FilterChip(state.repeat != Player.REPEAT_MODE_OFF, {
             controller?.repeatMode = when (state.repeat) {
                 Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
@@ -1097,7 +1110,7 @@ private fun PlaybackOptions(controller: MediaController?, state: PlaybackUi, dea
             Player.REPEAT_MODE_ONE -> "한 곡 반복"
             Player.REPEAT_MODE_ALL -> "전체 반복"
             else -> "반복 끔"
-        }) }, enabled = controller != null)
+        }) }, enabled = controller != null && !radioActive)
         Box {
             AssistChip(onClick = { speeds = true }, label = { Text("${state.speed}×") }, enabled = controller != null)
             DropdownMenu(expanded = speeds, onDismissRequest = { speeds = false }) {
@@ -1127,7 +1140,7 @@ private fun PlaybackOptions(controller: MediaController?, state: PlaybackUi, dea
 @Composable
 private fun SettingsScreen(
     modifier: Modifier, dark: Boolean, setDark: (Boolean) -> Unit, clearHistory: () -> Unit,
-    controller: MediaController?, playback: PlaybackUi, deadline: Long, store: LocalStore,
+    controller: MediaController?, playback: PlaybackUi, deadline: Long, store: LocalStore, radioActive: Boolean,
 ) {
     val autoplay by store.autoplay.collectAsStateWithLifecycle(false)
     val preload by store.preload.collectAsStateWithLifecycle(false)
@@ -1136,7 +1149,7 @@ private fun SettingsScreen(
         item {
             Headline("PREFERENCES", "설정", "재생 방식과 기기에 저장된 정보를 관리해요.")
             SectionTitle("재생", 0)
-            PlaybackOptions(controller, playback, deadline)
+            PlaybackOptions(controller, playback, deadline, radioActive)
             Text("오디오 전용 스트림을 먼저 사용해요. 제공되지 않으면 영상이 포함된 스트림에서 소리만 재생해요.",
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             ListItem(headlineContent = { Text("다음 곡 미리 준비") },

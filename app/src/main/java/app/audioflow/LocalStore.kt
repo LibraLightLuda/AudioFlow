@@ -319,7 +319,7 @@ class LocalStore(context: Context) {
                 },
                 index = json.optInt("index"),
                 position = json.optLong("position").coerceAtLeast(0),
-                speed = json.optDouble("speed", 1.0).toFloat().coerceIn(0.5f, 2f),
+                speed = normalizedPlaybackSpeed(json.optDouble("speed", 1.0).toFloat()),
                 repeat = json.optInt("repeat").coerceIn(0, 2),
                 shuffle = json.optBoolean("shuffle"),
             )
@@ -339,7 +339,7 @@ class LocalStore(context: Context) {
                 .put("channelUrl", track.channelUrl))
         }
         return JSONObject().put("tracks", tracks).put("index", state.index).put("position", state.position)
-            .put("speed", state.speed).put("repeat", state.repeat).put("shuffle", state.shuffle).toString()
+            .put("speed", normalizedPlaybackSpeed(state.speed)).put("repeat", state.repeat).put("shuffle", state.shuffle).toString()
     }
 }
 

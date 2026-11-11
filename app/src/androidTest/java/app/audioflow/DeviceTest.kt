@@ -29,6 +29,19 @@ import org.junit.runner.RunWith
 class DeviceTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
 
+    @Test fun playbackSpeedPersistsAcrossReadingTheQueue() = runBlocking {
+        val store = (context.applicationContext as AudioFlowApp).store
+        val saved = store.readQueue()
+        try {
+            for (speed in listOf(0.25f, 1.33f, 3.5f, 4f)) {
+                store.saveQueue(saved.copy(speed = speed))
+                assertEquals(speed, store.readQueue().speed)
+            }
+        } finally {
+            store.saveQueue(saved)
+        }
+    }
+
     @Suppress("DEPRECATION")
     @Test fun installedReleaseContainsOfflineNotesForItsOwnVersion() {
         val info = context.packageManager.getPackageInfo(context.packageName, 0)

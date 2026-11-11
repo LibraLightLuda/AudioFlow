@@ -1144,15 +1144,9 @@ private fun PlaybackOptions(controller: MediaController?, state: PlaybackUi, dea
             else -> "반복 끔"
         }) }, enabled = controller != null && !radioActive)
         Box {
-            AssistChip(onClick = { speeds = true }, label = { Text("${state.speed}×") }, enabled = controller != null)
-            DropdownMenu(expanded = speeds, onDismissRequest = { speeds = false }) {
-                listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f).forEach { speed ->
-                    DropdownMenuItem(text = { Text("${speed}×") }, onClick = {
-                        controller?.setPlaybackSpeed(speed)
-                        speeds = false
-                    })
-                }
-            }
+            AssistChip(onClick = { speeds = true }, label = { Text("${playbackSpeedLabel(state.speed)}×") },
+                enabled = controller != null)
+            if (speeds) PlaybackSpeedDialog(state.speed, { speeds = false }) { controller?.setPlaybackSpeed(it) }
         }
         Box {
             AssistChip(onClick = { timer = true }, label = { Text(if (deadline > 0) "취침 · ${minutesLeft}분" else "취침 타이머") },

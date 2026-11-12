@@ -8,6 +8,8 @@
 - 설정을 항목별 하위 화면으로 나누고, 백업은 설명이 있는 목록, 플레이어의 음향 설정·종료는 더보기 메뉴로 정리했습니다.
 - [Android 9·15 검사](https://github.com/LibraLightLuda/AudioFlow/actions/runs/43157100473)에서 각각 5개 검사가 실패·오류 없이 통과했습니다. 설정 이동, 테마 선택·라이트 전환, 화면 재진입에 따른 실제 GitHub 자동 조회, 변경사항 표시, 테마 저장, Media3 빈 버퍼 처리를 확인했습니다. UI 검사는 `app.audioflow.debug`에서 실행했으며 실제 YouTube 오디오 출력 검사는 포함하지 않습니다.
 - `AUDIOFLOW_LIVE=1`로 전체 JVM 테스트 38개가 실패·오류·건너뜀 없이 통과했습니다. 실제 익명 YouTube 스트림의 `audioOnly=true`, HTTP 206, `audio/webm` 수신을 확인했습니다. 릴리스 APK·Android 테스트 APK 빌드와 Lint(오류 0·경고 9)가 통과했습니다.
+- 최종 APK는 `app.audioflow`, 버전 코드 13, 14,110,484바이트입니다. 기존 배포본과 동일한 인증서, v2/v3 서명, 16 KiB ZIP 정렬을 확인했습니다. APK SHA-256: `2EE5D82A08CDF62A0093AE50EFACAF8E55F4D6398216AABA1E47067704629CB9`.
+- [최종 Android 검사 및 화면 캡처](https://github.com/LibraLightLuda/AudioFlow/actions/runs/43157974521)도 두 환경 모두 통과했습니다. Android 9·15에서 총 10장의 화면을 수집했고, 설정 목록·다크/라이트 테마·업데이트 화면의 배치와 가독성을 직접 확인했습니다. 캡처 당시 정식 최신 릴리스는 1.7.1이므로 설치 버전 1.8.0이 더 새롭다는 상태를 표시합니다.
 - 실기기의 실제 YouTube 소리 출력, 잠금 화면·블루투스 및 설치 승인 흐름은 미검증입니다.
 
 ## 1.7.3 로컬 수정본 — 2026-11-12 (KST)

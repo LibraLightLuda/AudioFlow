@@ -204,6 +204,27 @@ class DeviceTest {
         Unit
     }
 
+    @Test fun anonymousAudioExtractionOnAndroid() = runBlocking {
+        withContext(Dispatchers.IO) {
+            try {
+                val resolved = YoutubeCatalog.resolve("jNQXAC9IVRw")
+                assertTrue(resolved.audioOnly)
+                val request = okhttp3.Request.Builder().url(resolved.url).header("Range", "bytes=0-1023").build()
+                PrivateNetwork.stream.newCall(request).execute().use { response ->
+                    assertTrue("Audio HTTP ${response.code}", response.code == 200 || response.code == 206)
+                    assertTrue(checkNotNull(response.body).byteStream().read() >= 0)
+                }
+            } catch (failure: Throwable) {
+                val frames = generateSequence(failure) { it.cause }.take(8).joinToString("\n") { cause ->
+                    cause.javaClass.name + "\n" + cause.stackTrace.take(6).joinToString("\n") {
+                        "${it.className}.${it.methodName}:${it.lineNumber}"
+                    }
+                }
+                throw AssertionError(frames)
+            }
+        }
+    }
+
     @Test fun sharedYouTubeVideoStartsPlaybackAndSavesToDefault() = runBlocking {
         val id = "jNQXAC9IVRw"
         val intent = Intent(Intent.ACTION_SEND, null, context, MainActivity::class.java)

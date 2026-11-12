@@ -33,7 +33,7 @@ jobs:
           target: google_apis
           profile: pixel_6
           disable-animations: true
-          script: ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=app.audioflow.DeviceTest#sharedYouTubeVideoStartsPlaybackAndSavesToDefault --stacktrace
+          script: ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=app.audioflow.DeviceTest#anonymousAudioExtractionOnAndroid,app.audioflow.DeviceTest#sharedYouTubeVideoStartsPlaybackAndSavesToDefault --stacktrace
       - uses: actions/upload-artifact@v4
         if: always()
         with:

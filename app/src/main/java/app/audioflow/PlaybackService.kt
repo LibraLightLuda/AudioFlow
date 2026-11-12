@@ -676,4 +676,4 @@ internal fun playbackError(error: PlaybackException): String {
 }
 
 internal fun playbackDiagnostic(error: PlaybackException): String =
-    "${error.errorCodeName} · ${safeFailureTypes(error)}"
+    "${error.errorCodeName} · ${safeFailureTypes(error)}\n${safeFailureLocation(error)}"

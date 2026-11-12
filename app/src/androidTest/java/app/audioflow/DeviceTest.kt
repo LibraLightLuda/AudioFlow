@@ -224,6 +224,13 @@ class DeviceTest {
                     }
                     assertTrue(controller.currentTracks.isTypeSelected(C.TRACK_TYPE_AUDIO))
                     assertFalse(controller.currentTracks.isTypeSelected(C.TRACK_TYPE_VIDEO))
+                    for (speed in listOf(0.25f, 1.33f, 4f, 1f)) {
+                        controller.setPlaybackSpeed(speed)
+                        val before = controller.currentPosition
+                        delay(600)
+                        controller.playerError?.let { throw AssertionError(playbackDiagnostic(it)) }
+                        assertTrue("Playback must advance at $speed", controller.currentPosition > before)
+                    }
                     val other = Track("dQw4w9WgXcQ", "Never Gonna Give You Up", "Rick Astley")
                     val position = controller.currentPosition
                     controller.addMediaItem(controller.currentMediaItemIndex + 1, other.mediaItem())

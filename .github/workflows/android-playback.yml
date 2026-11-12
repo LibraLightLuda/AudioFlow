@@ -6,6 +6,10 @@ permissions:
 jobs:
   playback:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [28, 35]
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +28,7 @@ jobs:
           chmod +x gradlew
       - uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 35
+          api-level: ${{ matrix.api }}
           arch: x86_64
           target: google_apis
           profile: pixel_6
@@ -33,7 +37,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: android-playback-results
+          name: android-playback-results-${{ matrix.api }}
           path: |
             app/build/reports/androidTests
             app/build/outputs/androidTest-results

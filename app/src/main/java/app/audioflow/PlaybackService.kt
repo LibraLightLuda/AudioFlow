@@ -403,6 +403,7 @@ class PlaybackService : MediaSessionService() {
             }
             command.customAction == RetryPlayback.customAction -> {
                 if (player.playerError != null && player.currentMediaItem != null) {
+                    YoutubeCatalog.forgetStream(checkNotNull(player.currentMediaItem).mediaId)
                     if (manualQueue != null) {
                         app.radio.value = RadioUi(RadioPhase.On)
                         radioErrors = 0
@@ -666,7 +667,13 @@ internal fun playbackError(error: PlaybackException): String {
             PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
             PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ->
                 "네트워크 연결이 끊겼거나 응답이 늦어요. 연결 확인 후 현재 위치에서 다시 시도해 주세요."
+            in 3000..3999 -> "재생할 미디어 형식을 읽지 못했어요."
+            in 4000..4999 -> "기기의 오디오 디코더가 이 스트림을 재생하지 못했어요."
+            in 5000..5999 -> "오디오 출력 장치를 초기화하거나 재생하지 못했어요."
             else -> catalogError(error)
         }
     }
 }
+
+internal fun playbackDiagnostic(error: PlaybackException): String =
+    "${error.errorCodeName} · ${safeFailureTypes(error)}"

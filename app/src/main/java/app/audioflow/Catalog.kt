@@ -412,6 +412,8 @@ fun catalogError(error: Throwable): String {
         chain.any { it.message?.contains("login_required", ignoreCase = true) == true } ->
             "로그인이 필요한 콘텐츠는 지원하지 않아요."
         chain.any { it is ContentNotAvailableException } -> "삭제, 비공개 또는 재생이 제한된 콘텐츠예요."
+        chain.any { it is javax.net.ssl.SSLException || it is java.security.cert.CertificateException } ->
+            "보안 연결을 확인하지 못했어요. 기기의 날짜·시간과 네트워크 설정을 확인해 주세요."
         chain.any { it is java.net.UnknownHostException || it is java.net.SocketTimeoutException ||
             it is java.net.ConnectException || it is java.net.SocketException } ->
             "네트워크에 연결할 수 없어요. 연결을 확인한 뒤 다시 시도해 주세요."

@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.*
@@ -82,6 +83,7 @@ private data class PlaybackUi(
     val repeat: Int = 0,
     val shuffle: Boolean = false,
     val error: String? = null,
+    val diagnostic: String? = null,
 ) {
     val current get() = queue.getOrNull(index)
 }
@@ -96,6 +98,7 @@ private fun MediaController.readPlayback(knownQueue: List<Track>? = null): Playb
         isPlaying, playbackState == Player.STATE_BUFFERING && playWhenReady, isCurrentMediaItemSeekable,
         hasNextMediaItem(), playbackParameters.speed, repeatMode, shuffleModeEnabled,
         playerError?.let(::playbackError),
+        playerError?.let(::playbackDiagnostic),
     )
 }
 
@@ -1064,6 +1067,9 @@ private fun PlayerScreen(
                         })
                     }
                     TextButton(onClick = { controller?.seekToNextMediaItem() }, enabled = state.hasNext) { Text("다음") }
+                }
+                if (state.diagnostic != null) SelectionContainer {
+                    Text("오류 정보 · ${state.diagnostic}", style = MaterialTheme.typography.bodySmall)
                 }
                 if (autoplayReason != null) Text(autoplayReason, style = MaterialTheme.typography.labelMedium)
                 if (state.error != null) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

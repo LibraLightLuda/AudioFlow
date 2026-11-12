@@ -319,7 +319,8 @@ internal fun AudioFlowScreen(
         { excludeTrack = it },
     )
 
-    MaterialTheme(colorScheme = audioFlowColors(colorTheme, dark)) {
+    val colors = remember(colorTheme, dark) { audioFlowColors(colorTheme, dark) }
+    MaterialTheme(colorScheme = colors) {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.surface,
             snackbarHost = { SnackbarHost(snackbar) },

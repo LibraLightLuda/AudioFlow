@@ -1,10 +1,9 @@
 package app.audioflow
 
-import android.graphics.Bitmap
-import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
-import java.io.File
+import androidx.test.platform.app.InstrumentationRegistry
+import java.io.FileInputStream
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Rule
@@ -44,9 +43,10 @@ class SettingsUiTest {
     }
 
     private fun screenshot(name: String) {
-        val directory = File(ui.activity.getExternalFilesDir(null), "screenshots").apply { mkdirs() }
-        File(directory, "$name.png").outputStream().use {
-            ui.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it)
+        ui.waitForIdle()
+        InstrumentationRegistry.getInstrumentation().uiAutomation
+            .executeShellCommand("screencap -p /data/local/tmp/AudioFlow-$name.png").use {
+                FileInputStream(it.fileDescriptor).use { stream -> stream.readBytes() }
         }
     }
 }

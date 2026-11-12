@@ -1,4 +1,4 @@
-name: Android playback check
+name: Android regression checks
 on:
   workflow_dispatch:
 permissions:
@@ -34,11 +34,12 @@ jobs:
           target: google_apis
           profile: pixel_6
           disable-animations: true
-          script: ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=app.audioflow.DeviceTest#anonymousAudioExtractionOnAndroid,app.audioflow.DeviceTest#sharedYouTubeVideoStartsPlaybackAndSavesToDefault --stacktrace
+          script: bash .github/run-android-checks.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: android-playback-results-${{ matrix.api }}
           path: |
             app/build/reports/androidTests
+            app/build/reports/screenshots
             app/build/outputs/androidTest-results

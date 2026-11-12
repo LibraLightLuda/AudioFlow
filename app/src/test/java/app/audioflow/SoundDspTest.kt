@@ -3,7 +3,10 @@
 package app.audioflow
 
 import androidx.media3.common.C
+import androidx.media3.common.audio.AudioProcessingPipeline
+import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.audio.AudioProcessor.AudioFormat
+import com.google.common.collect.ImmutableList
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.PI
@@ -14,6 +17,49 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SoundDspTest {
+    @Suppress("DEPRECATION")
+    @Test fun media3PipelineDrainsBeforeAudioArrivesAndPreservesFramesAfterFlush() {
+        for (encoding in listOf(C.ENCODING_PCM_16BIT, C.ENCODING_PCM_FLOAT)) {
+            for (profile in listOf(SoundProfile(), SoundProfile(space = SoundSpace.Wide, strength = 100))) {
+                val processor = SoundAudioProcessor().apply { this.profile = profile }
+                val pipeline = AudioProcessingPipeline(ImmutableList.of(processor))
+                pipeline.configure(AudioFormat(48_000, 2, encoding))
+                repeat(2) {
+                    pipeline.flush()
+                    assertFalse(pipeline.output.hasRemaining())
+                    pipeline.queueInput(AudioProcessor.EMPTY_BUFFER)
+                    val size = if (encoding == C.ENCODING_PCM_FLOAT) 8 else 4
+                    val input = ByteBuffer.allocateDirect(size).order(ByteOrder.nativeOrder()).apply {
+                        if (encoding == C.ENCODING_PCM_FLOAT) { putFloat(0.25f); putFloat(0f) }
+                        else { putShort(8192); putShort(0) }
+                        flip()
+                    }
+                    pipeline.queueInput(input)
+                    val output = pipeline.output.order(ByteOrder.nativeOrder())
+                    assertEquals(size, output.remaining())
+                    if (encoding == C.ENCODING_PCM_FLOAT) assertTrue(output.float > 0f)
+                    else assertTrue(output.short > 0)
+                    output.position(output.limit())
+                    pipeline.queueEndOfStream()
+                    assertFalse(pipeline.output.hasRemaining())
+                    assertTrue(pipeline.isEnded)
+                }
+                pipeline.reset()
+            }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    @Test fun media3ProcessorAcceptsEmptyInputBeforeTheFirstAudioFrame() {
+        val processor = SoundAudioProcessor()
+        processor.configure(AudioFormat(48_000, 2, C.ENCODING_PCM_16BIT))
+        processor.flush()
+        processor.queueInput(AudioProcessor.EMPTY_BUFFER)
+        assertFalse(processor.output.hasRemaining())
+        processor.queueEndOfStream()
+        assertTrue(processor.isEnded)
+    }
+
     @Test fun profilesRoundTripAndRejectOutOfRangeSettings() {
         assertEquals(9, builtInSoundPresets.size)
         builtInSoundPresets.forEach { assertEquals(it.profile, SoundProfile.decode(it.profile.encode())) }

@@ -61,11 +61,11 @@ internal fun LibraryBackupControls(dao: LibraryDao) {
             pending = incoming to preview
         }
     }
-    Text("즐겨찾기·플레이리스트 백업")
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        TextButton(onClick = { export.launch("AudioFlow-library.json") }, enabled = !busy) { Text("내보내기") }
-        TextButton(onClick = { import.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
-            enabled = !busy) { Text("가져오기") }
+    SettingsRow("라이브러리 내보내기", "즐겨찾기와 플레이리스트를 JSON 파일로 저장해요.") {
+        if (!busy) export.launch("AudioFlow-library.json")
+    }
+    SettingsRow("라이브러리 가져오기", "백업 내용을 미리 확인하고 기존 목록에 합쳐요.") {
+        if (!busy) import.launch(arrayOf("application/json", "text/plain", "application/octet-stream"))
     }
     if (busy) Text("파일을 처리하는 중…")
     message?.let { Text(it) }

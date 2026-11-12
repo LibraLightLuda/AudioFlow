@@ -252,6 +252,7 @@ class LocalStore(context: Context) {
     private val queueKey = stringPreferencesKey("queue")
     private val queueWrite = Mutex()
     private val darkKey = booleanPreferencesKey("dark")
+    private val colorThemeKey = stringPreferencesKey("color_theme")
     private val autoplayKey = booleanPreferencesKey("autoplay")
     private val preloadKey = booleanPreferencesKey("preload")
     private val soundKey = stringPreferencesKey("sound_profile")
@@ -259,6 +260,7 @@ class LocalStore(context: Context) {
     private val releaseNotesSeenKey = longPreferencesKey("release_notes_seen")
     private val data = settings.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }
     val dark = data.map { it[darkKey] ?: true }.distinctUntilChanged()
+    internal val colorTheme = data.map { AppColorTheme.decode(it[colorThemeKey]) }.distinctUntilChanged()
     val autoplay = data.map { it[autoplayKey] ?: false }.distinctUntilChanged()
     val preload = data.map { it[preloadKey] ?: false }.distinctUntilChanged()
     internal val sound = data.map { SoundProfile.decode(it[soundKey]) }.distinctUntilChanged()
@@ -273,6 +275,8 @@ class LocalStore(context: Context) {
     suspend fun setDark(dark: Boolean) {
         settings.edit { it[darkKey] = dark }
     }
+
+    internal suspend fun setColorTheme(theme: AppColorTheme) { settings.edit { it[colorThemeKey] = theme.name } }
 
     suspend fun setAutoplay(enabled: Boolean) { settings.edit { it[autoplayKey] = enabled } }
     suspend fun setPreload(enabled: Boolean) { settings.edit { it[preloadKey] = enabled } }

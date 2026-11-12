@@ -11,18 +11,25 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.core.content.pm.PackageInfoCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import java.io.File
+import java.text.DateFormat
+import java.util.Date
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -60,11 +67,12 @@ internal fun UpdateControls(openInstalledNotes: (() -> Unit)?) {
     val installed = remember(context) { manager.getPackageInfo(context.packageName, signingFlags()) }
     val directory = remember(context) { File(context.cacheDir, "updates") }
     val scope = rememberCoroutineScope()
-    var offer by remember { mutableStateOf<UpdateAsset?>(null) }
+    var latest by remember { mutableStateOf<UpdateAsset?>(null) }
     var pending by rememberSaveable { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf<Int?>(null) }
     var status by rememberSaveable { mutableStateOf<String?>(null) }
+    var checkedAt by remember { mutableStateOf<String?>(null) }
 
     fun runUpdate(action: suspend () -> Unit) {
         if (busy) return
@@ -84,6 +92,24 @@ internal fun UpdateControls(openInstalledNotes: (() -> Unit)?) {
                 busy = false
             }
         }
+    }
+
+    fun checkLatest() = runUpdate {
+        val version = installed.versionName?.let(ReleaseVersion::parse)
+            ?: throw UpdateException("설치된 앱 버전을 확인하지 못했어요.")
+        val release = withContext(Dispatchers.IO) { ReleaseUpdate.latest() }
+        latest = release
+        checkedAt = DateFormat.getTimeInstance(DateFormat.SHORT).format(Date())
+        status = when {
+            release.version > version -> "새 버전을 설치할 수 있어요."
+            release.version == version -> "최신 버전을 사용하고 있어요."
+            else -> "설치 버전이 공개 릴리스보다 새로워요."
+        }
+        if (release.version <= version || pending != release.version.toString()) pending = null
+    }
+
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        if (pending == null) checkLatest()
     }
 
     suspend fun openInstaller() {
@@ -114,26 +140,24 @@ internal fun UpdateControls(openInstalledNotes: (() -> Unit)?) {
         }
     }
 
-    Text("설치된 버전 ${installed.versionName}")
-    Text("GitHub · LibraLightLuda/AudioFlow")
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        TextButton(enabled = !busy && context.packageName == "app.audioflow", onClick = {
-            runUpdate {
-                val version = installed.versionName?.let(ReleaseVersion::parse)
-                    ?: throw UpdateException("설치된 앱 버전을 확인하지 못했어요.")
-                val update = withContext(Dispatchers.IO) { ReleaseUpdate.latest(version) }
-                if (update == null) {
-                    pending = null
-                    status = "현재 최신 버전이에요."
-                } else offer = update
+    val installedVersion = installed.versionName?.let(ReleaseVersion::parse)
+    val update = latest?.takeIf { installedVersion != null && it.version > installedVersion }
+    val canInstall = context.packageName == "app.audioflow"
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("AudioFlow ${installed.versionName}", style = MaterialTheme.typography.titleLarge)
+                        Text(if (busy && progress == null) "최신 버전 확인 중…" else status ?: "최신 릴리스 확인",
+                            style = MaterialTheme.typography.bodyMedium)
+                    }
+                    IconButton(enabled = !busy, onClick = { checkLatest() }) { Icon(Icons.Default.Refresh, "최신 버전 다시 확인") }
+                }
+                latest?.let { Text("GitHub 정식 버전 ${it.version}", style = MaterialTheme.typography.labelLarge) }
+                checkedAt?.let { Text("마지막 확인 $it", style = MaterialTheme.typography.bodySmall) }
             }
-        }) { Text("최신 버전 확인") }
-        TextButton(onClick = {
-            if (!openGithubRelease(context)) status = "GitHub 주소를 열 브라우저가 없어요."
-        }) { Text("GitHub 릴리스 열기") }
-        if (openInstalledNotes != null) TextButton(onClick = openInstalledNotes) { Text("이번 버전 변경사항") }
-        if (pending != null) TextButton(enabled = !busy, onClick = { runUpdate { requestInstall() } }) { Text("설치 계속") }
-    }
+        }
     if (busy) {
         val percent = progress
         if (percent != null) {
@@ -141,21 +165,12 @@ internal fun UpdateControls(openInstalledNotes: (() -> Unit)?) {
             Text(if (percent < 100) "APK 다운로드 $percent%" else "APK 크기와 서명을 확인하는 중…")
         } else LinearProgressIndicator()
     }
-    status?.let { Text(it) }
-    offer?.let { update ->
-        AlertDialog(
-            onDismissRequest = { offer = null },
-            title = { Text("AudioFlow ${update.version} 업데이트") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ReleaseNotesBody(update.notes)
-                    Text("설치는 Android 화면에서 확인해 주세요.")
-                    TextButton(onClick = { openGithubRelease(context, update.version) }) { Text("GitHub에서 자세히 보기") }
-                }
-            },
-            confirmButton = {
-                TextButton(enabled = !busy, onClick = {
-                    offer = null
+        if (pending != null && canInstall) {
+            Button(enabled = !busy, modifier = Modifier.fillMaxWidth(), onClick = { runUpdate { requestInstall() } }) {
+                Text("설치 계속")
+            }
+        } else if (update != null && canInstall) {
+                Button(enabled = !busy, modifier = Modifier.fillMaxWidth(), onClick = {
                     runUpdate {
                         progress = 0
                         withContext(Dispatchers.IO) {
@@ -166,9 +181,20 @@ internal fun UpdateControls(openInstalledNotes: (() -> Unit)?) {
                         pending = update.version.toString()
                         requestInstall()
                     }
-                }) { Text("다운로드 및 설치") }
-            },
-            dismissButton = { TextButton(onClick = { offer = null }) { Text("나중에") } },
-        )
+                }) { Text("${update.version} 다운로드 및 설치") }
+        }
+        if (update != null) {
+            Text("${update.version} 개선사항", style = MaterialTheme.typography.titleMedium)
+            ReleaseNotesBody(update.notes)
+        } else {
+            val notes = remember(context) { installedReleaseNotes(context) }
+            Text("이번 버전의 개선사항", style = MaterialTheme.typography.titleMedium)
+            ReleaseNotesBody(latest?.takeIf { it.version == installedVersion }?.notes?.takeIf { it.isNotBlank() } ?: notes?.body.orEmpty())
+        }
+        HorizontalDivider()
+        SettingsRow("GitHub 배포처", "LibraLightLuda/AudioFlow · 정식 릴리스") {
+            if (!openGithubRelease(context)) status = "GitHub 주소를 열 브라우저가 없어요."
+        }
+        if (openInstalledNotes != null && update != null) SettingsRow("설치된 버전 변경사항", "AudioFlow ${installed.versionName}", openInstalledNotes)
     }
 }

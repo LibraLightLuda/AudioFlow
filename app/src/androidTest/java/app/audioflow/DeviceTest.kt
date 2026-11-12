@@ -29,6 +29,30 @@ import org.junit.runner.RunWith
 class DeviceTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
 
+    @Suppress("DEPRECATION")
+    @Test fun audioPipelineAcceptsEmptyInputOnAndroid() {
+        val pipeline = androidx.media3.common.audio.AudioProcessingPipeline(
+            com.google.common.collect.ImmutableList.of(SoundAudioProcessor()))
+        pipeline.configure(androidx.media3.common.audio.AudioProcessor.AudioFormat(48_000, 2, C.ENCODING_PCM_16BIT))
+        pipeline.flush()
+        assertFalse(pipeline.output.hasRemaining())
+        val input = java.nio.ByteBuffer.allocateDirect(4).order(java.nio.ByteOrder.nativeOrder())
+            .putShort(8192).putShort(0).apply { flip() }
+        pipeline.queueInput(input)
+        assertEquals(8192, pipeline.output.order(java.nio.ByteOrder.nativeOrder()).short.toInt())
+        pipeline.queueEndOfStream()
+        pipeline.reset()
+    }
+
+    @Test fun themeSelectionPersistsAcrossStoreInstances() = runBlocking {
+        val store = (context as AudioFlowApp).store
+        val previous = store.colorTheme.first()
+        try {
+            store.setColorTheme(AppColorTheme.Rose)
+            assertEquals(AppColorTheme.Rose, LocalStore(context).colorTheme.first())
+        } finally { store.setColorTheme(previous) }
+    }
+
     @Test fun playbackSpeedPersistsAcrossReadingTheQueue() = runBlocking {
         val store = (context.applicationContext as AudioFlowApp).store
         val saved = store.readQueue()
@@ -104,7 +128,7 @@ class DeviceTest {
         Unit
     }
 
-    @Test fun updateMetadataRequiresNewStableReleaseAndOfficialAsset() {
+    @Test fun updateMetadataRetainsNotesAndRequiresOfficialStableAsset() {
         val installed = checkNotNull(ReleaseVersion.parse("1.9.0"))
         val newer = """
             {"tag_name":"v1.10.0","draft":false,"prerelease":false,"body":"- 릴리스 변경사항","assets":[{
@@ -113,13 +137,15 @@ class DeviceTest {
             "browser_download_url":"$RELEASE_REPOSITORY/releases/download/v1.10.0/AudioFlow-1.10.0.apk"
             }]}
         """.trimIndent()
-        assertEquals("1.10.0", parseLatestUpdate(newer, installed)?.version.toString())
-        assertEquals("- 릴리스 변경사항", parseLatestUpdate(newer, installed)?.notes)
-        assertEquals(null, parseLatestUpdate(newer, checkNotNull(ReleaseVersion.parse("1.10.0"))))
+        val release = parseLatestRelease(newer)
+        assertEquals("1.10.0", release.version.toString())
+        assertEquals("- 릴리스 변경사항", release.notes)
+        assertTrue(release.version > installed)
+        assertEquals(checkNotNull(ReleaseVersion.parse("1.10.0")), release.version)
         listOf(newer.replace("prerelease\":false", "prerelease\":true"),
             newer.replace("$RELEASE_REPOSITORY/", "https://github.com/other/other/"),
             newer.replace("sha256:", "unknown:"), newer.replace("\"size\":512", "\"size\":0")).forEach {
-            assertTrue(runCatching { parseLatestUpdate(it, installed) }.isFailure)
+            assertTrue(runCatching { parseLatestRelease(it) }.isFailure)
         }
     }
 

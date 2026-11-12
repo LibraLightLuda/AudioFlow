@@ -27,6 +27,8 @@ internal class SoundAudioProcessor : BaseAudioProcessor() {
     }
 
     override fun queueInput(inputBuffer: ByteBuffer) {
+        // Media3 also drains with EMPTY_BUFFER, which replaceOutputBuffer(0) can return unchanged.
+        if (!inputBuffer.hasRemaining()) return
         val processor = dsp
         processor?.configure(profile)
         val output = replaceOutputBuffer(inputBuffer.remaining()).order(ByteOrder.nativeOrder())

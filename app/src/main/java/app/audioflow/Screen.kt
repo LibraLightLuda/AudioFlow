@@ -11,6 +11,7 @@ import android.os.SystemClock
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -23,6 +24,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -37,6 +39,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -53,19 +56,6 @@ import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-
-private val Night = darkColorScheme(
-    primary = Color(0xFF8EF3C5), onPrimary = Color(0xFF003827),
-    surface = Color(0xFF101713), onSurface = Color(0xFFEDF4EE),
-    surfaceContainer = Color(0xFF19251F), surfaceContainerHigh = Color(0xFF22332B),
-    background = Color(0xFF101713), onSurfaceVariant = Color(0xFFB4C8BB),
-    secondaryContainer = Color(0xFF264B3C), onSecondaryContainer = Color(0xFFC0F7DB),
-)
-private val Day = lightColorScheme(
-    primary = Color(0xFF006B4F), surface = Color(0xFFF5FAF6),
-    surfaceContainer = Color(0xFFE8F3EB), background = Color(0xFFF5FAF6),
-    secondaryContainer = Color(0xFFC7EED9),
-)
 
 private enum class Page(val title: String) { Home("홈"), Library("라이브러리"), Settings("설정") }
 private enum class Shelf(val title: String) { Favorite("즐겨찾기"), History("재생 기록"), Playlists("플레이리스트") }
@@ -126,6 +116,7 @@ internal fun AudioFlowScreen(
     val favorites by remember(dao) { dao.favorites() }.collectAsStateWithLifecycle(emptyList())
     val playlists by remember(dao) { dao.playlists() }.collectAsStateWithLifecycle(emptyList())
     val dark by store.dark.collectAsStateWithLifecycle(true)
+    val colorTheme by store.colorTheme.collectAsStateWithLifecycle(AppColorTheme.Mint)
     val view = LocalView.current
     SideEffect {
         val window = (view.context as? Activity)?.window ?: return@SideEffect
@@ -328,7 +319,7 @@ internal fun AudioFlowScreen(
         { excludeTrack = it },
     )
 
-    MaterialTheme(colorScheme = if (dark) Night else Day) {
+    MaterialTheme(colorScheme = audioFlowColors(colorTheme, dark)) {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.surface,
             snackbarHost = { SnackbarHost(snackbar) },
@@ -382,7 +373,8 @@ internal fun AudioFlowScreen(
                         { ids -> playlist?.let { list -> update { dao.removeDuplicates(list.id, ids) } } },
                     )
                 }
-                else -> SettingsScreen(modifier, dark, { update { store.setDark(it) } },
+                else -> SettingsScreen(modifier, dark, { update { store.setDark(it) } }, colorTheme,
+                    { update { store.setColorTheme(it) } },
                     { clearHistory = true }, controller, playback, deadline, store, radio.phase != RadioPhase.Off,
                     { soundOpen = true },
                     if (installedNotes != null) ({ releaseNotesOpen = true }) else null)
@@ -945,6 +937,7 @@ private fun PlayerScreen(
     var selecting by remember(showQueue) { mutableStateOf(false) }
     var selected by remember(state.queue, state.index) { mutableStateOf(emptySet<Int>()) }
     var dragTarget by remember(state.queue) { mutableStateOf<Int?>(null) }
+    var more by remember { mutableStateOf(false) }
     LaunchedEffect(showQueue) { listState.scrollToItem(0) }
     LazyColumn(
         modifier.windowInsetsPadding(WindowInsets.navigationBars),
@@ -957,6 +950,16 @@ private fun PlayerScreen(
                 Text("NOW PLAYING", Modifier.weight(1f), color = MaterialTheme.colorScheme.primary,
                     fontSize = 11.sp, letterSpacing = 2.sp, fontWeight = FontWeight.Bold)
                 TextButton(onClick = { setQueue(!showQueue) }) { Text(if (showQueue) "재생 화면" else "대기열") }
+                Box {
+                    IconButton(onClick = { more = true }) { Icon(Icons.Default.MoreVert, "플레이어 더보기") }
+                    DropdownMenu(more, { more = false }) {
+                        DropdownMenuItem(text = { Text("음향 설정") }, onClick = { more = false; openSound() })
+                        DropdownMenuItem(text = { Text("재생 종료") }, enabled = controller != null, onClick = {
+                            more = false
+                            controller?.sendCustomCommand(StopPlayback, Bundle.EMPTY)
+                        })
+                    }
+                }
             }
             if (radio.phase != RadioPhase.Off) RadioCard(radio, controller != null, startRadio, stopRadio)
         }
@@ -1094,10 +1097,7 @@ private fun PlayerScreen(
                     }) { Text("YouTube에서 열기") }
                 }
                 PlaybackOptions(controller, state, deadline, radio.phase != RadioPhase.Off)
-                OutlinedButton(onClick = openSound) { Text("음향 설정") }
                 CaptionPanel(current.id, state.position, state.seekable) { controller?.seekTo(it) }
-                TextButton(onClick = { controller?.sendCustomCommand(StopPlayback, Bundle.EMPTY) },
-                    enabled = controller != null) { Text("재생 종료") }
             }
         }
     }
@@ -1171,21 +1171,30 @@ private fun PlaybackOptions(controller: MediaController?, state: PlaybackUi, dea
 
 @Composable
 private fun SettingsScreen(
-    modifier: Modifier, dark: Boolean, setDark: (Boolean) -> Unit, clearHistory: () -> Unit,
+    modifier: Modifier, dark: Boolean, setDark: (Boolean) -> Unit, colorTheme: AppColorTheme,
+    setColorTheme: (AppColorTheme) -> Unit, clearHistory: () -> Unit,
     controller: MediaController?, playback: PlaybackUi, deadline: Long, store: LocalStore, radioActive: Boolean,
     openSound: () -> Unit, openInstalledNotes: (() -> Unit)?,
 ) {
     val autoplay by store.autoplay.collectAsStateWithLifecycle(false)
     val preload by store.preload.collectAsStateWithLifecycle(false)
     val scope = rememberCoroutineScope()
-    LazyColumn(modifier, contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp)) {
+    var section by rememberSaveable { mutableStateOf("설정") }
+    BackHandler(section != "설정") { section = "설정" }
+    key(section) { LazyColumn(modifier, contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp)) {
         item {
-            Headline("PREFERENCES", "설정", "재생 방식과 기기에 저장된 정보를 관리해요.")
-            SectionTitle("재생", 0)
+            if (section != "설정") TextButton(onClick = { section = "설정" }) { Text("설정으로 돌아가기") }
+            Headline("PREFERENCES", section, if (section == "설정") "나에게 맞는 감상 환경을 만들어요." else null)
+        }
+        if (section == "설정") {
+            item { SettingsRow("재생", "배속 · 반복 · 취침 타이머 · 이어 재생") { section = "재생" } }
+            item { SettingsRow("음향 설정", "이퀄라이저 · 공간 음향 · 프리셋", openSound) }
+            item { SettingsRow("화면과 색 테마", "${colorTheme.title} · ${if (dark) "다크 모드" else "라이트 모드"}") { section = "화면과 색 테마" } }
+            item { SettingsRow("기기 저장", "라이브러리 백업 · 복원 · 재생 기록") { section = "기기 저장" } }
+            item { SettingsRow("앱 업데이트", "최신 버전과 개선사항 확인") { section = "앱 업데이트" } }
+        }
+        if (section == "재생") item {
             PlaybackOptions(controller, playback, deadline, radioActive)
-            ListItem(headlineContent = { Text("음향 설정") },
-                supportingContent = { Text("이퀄라이저 · 공간 음향 · 프리셋") },
-                modifier = Modifier.clickable(onClick = openSound))
             Text("오디오 전용 스트림을 먼저 사용해요. 제공되지 않으면 영상이 포함된 스트림에서 소리만 재생해요.",
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             ListItem(headlineContent = { Text("다음 곡 미리 준비") },
@@ -1194,20 +1203,39 @@ private fun SettingsScreen(
             ListItem(headlineContent = { Text("관련 곡 이어 재생") },
                 supportingContent = { Text("대기열이 끝나면 같은 목록이나 채널에서 아직 듣지 않은 곡을 찾아요.") },
                 trailingContent = { Switch(autoplay, { scope.launch { store.setAutoplay(it) } }) })
-            SectionTitle("화면", 0)
+        }
+        if (section == "화면과 색 테마") {
+            item {
             ListItem(headlineContent = { Text("다크 모드") }, trailingContent = {
                 Switch(checked = dark, onCheckedChange = setDark,
                     modifier = Modifier.semantics { contentDescription = "다크 모드" })
             })
-            SectionTitle("기기 저장", 0)
+            SectionTitle("컬러 테마", 0)
+            }
+            AppColorTheme.entries.forEach { theme -> item {
+                ListItem(headlineContent = { Text(theme.title) },
+                    leadingContent = { Box(Modifier.size(32.dp).clip(CircleShape).background(if (dark) theme.dark else theme.light)) },
+                    trailingContent = { RadioButton(colorTheme == theme, onClick = null) },
+                    modifier = Modifier.selectable(colorTheme == theme, role = Role.RadioButton) { setColorTheme(theme) })
+            } }
+            item { Text("선택한 색은 앱 전체에 바로 적용되고 기기에 저장돼요.", Modifier.padding(16.dp),
+                style = MaterialTheme.typography.bodyMedium) }
+        }
+        if (section == "기기 저장") item {
             LibraryBackupControls(store.dao)
             ListItem(headlineContent = { Text("재생 기록 지우기") },
                 supportingContent = { Text("최근 재생과 트랙별 재생 위치를 삭제해요.") },
                 modifier = Modifier.clickable(onClick = clearHistory))
-            SectionTitle("앱 업데이트", 0)
-            UpdateControls(openInstalledNotes)
         }
-    }
+        if (section == "앱 업데이트") item { UpdateControls(openInstalledNotes) }
+    } }
+}
+
+@Composable
+internal fun SettingsRow(title: String, detail: String, onClick: () -> Unit) {
+    ListItem(headlineContent = { Text(title) }, supportingContent = { Text(detail) },
+        trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null) },
+        modifier = Modifier.clickable(role = Role.Button, onClick = onClick))
 }
 
 private fun time(seconds: Long): String {

@@ -1,5 +1,24 @@
 # AudioFlow 검증
 
+## 1.8.0 — 2026-11-12 (KST)
+
+- 직전 로컬 1.7.3의 빈 버퍼 자기 복사 방지 수정과 회귀 검사를 포함합니다.
+- 업데이트 화면의 진입·복귀 시 최신 정식 릴리스를 조회하고, 동일 버전도 변경사항을 읽을 수 있도록 메타데이터 파서를 수정했습니다. APK 주소·크기·SHA-256·서명·버전 검증과 사용자 설치 확인 절차는 유지합니다.
+- 민트·오션 블루·라벤더·로즈·앰버 테마를 즉시 적용하고 DataStore에 저장합니다. 두 모드에서 주요 텍스트 색 대비 4.5:1 이상, 알 수 없는 저장값의 기본 테마 복원을 검사합니다.
+- 설정을 항목별 하위 화면으로 나누고, 백업은 설명이 있는 목록, 플레이어의 음향 설정·종료는 더보기 메뉴로 정리했습니다.
+- Android 9·15에서 설정 이동, 테마 선택·라이트 전환, 화면 재진입에 따른 실제 GitHub 자동 조회, 변경사항 표시, 테마 저장, Media3 빈 버퍼 처리 검사를 실행할 예정입니다. 검증 결과는 실행 후 기록합니다.
+- 실기기의 실제 YouTube 소리 출력, 잠금 화면·블루투스 및 설치 승인 흐름은 미검증입니다.
+
+## 1.7.3 로컬 수정본 — 2026-11-12 (KST)
+
+- 사용자 진단: `ERROR_CODE_FAILED_RUNTIME_CHECK · ExoPlaybackException → IllegalArgumentException · Buffer.createSameBufferException ← ByteBuffer.put`.
+- 수정 전 실제 Media3 1.9.2 `AudioProcessingPipeline.getOutput()` 호출로 같은 `IllegalArgumentException: The source buffer is this buffer`를 재현했습니다. 호출 경로는 `AudioProcessingPipeline.processData → SoundAudioProcessor.queueInput → ByteBuffer.put → Buffer.createSameBufferException`입니다. 빈 입력에 대해 출력 버퍼도 동일한 `AudioProcessor.EMPTY_BUFFER`가 되면서 발생하는 앱 내부 결함입니다.
+- 수정: `SoundAudioProcessor.queueInput()` 시작에서 데이터가 없는 입력은 반환합니다. 이퀄라이저·공간 음향·배속·캐시·사용자 라이브러리 처리는 변경하지 않았습니다.
+- 회귀 검사: 첫 프레임 전 빈 입력과 종료, 실제 Media3 처리 파이프라인의 사전 출력 조회·PCM 프레임 전달·종료·재초기화를 검사합니다. PCM16/float와 기본/공간 음향 프로필을 조합해 검사합니다.
+- 수정 후 `AUDIOFLOW_LIVE=1` 전체 JVM 테스트 37개가 실패·오류·건너뜀 없이 통과했습니다. 실제 익명 스트림은 `audioOnly=true`, HTTP 206, `audio/webm` 수신을 확인했습니다. `assembleRelease`, `lintRelease`, `assembleDebugAndroidTest`가 통과했으며 Lint는 오류 0개·경고 9개입니다. JVM의 Media3 파이프라인 검증을 Android 기기에서의 실제 소리 출력 검증과 구분합니다.
+- 로컬 설치용 `dist/AudioFlow-1.7.3.apk`는 `app.audioflow`, 버전 코드 12, 14,094,100바이트입니다. v2/v3 서명, 기존 배포본과 동일한 인증서, 16 KiB ZIP 정렬을 검증했습니다. APK SHA-256: `3E7A4BD331BA1B7DAC71EE6AB95BFEB2562380774185647AA0325A0CB3312BB9`.
+- 사용자 요청에 따라 GitHub 푸시, 태그, 릴리스, Actions 실행은 하지 않습니다. 연결된 실기기가 없어 실제 휴대전화 재생·잠금 화면·블루투스는 미검증입니다.
+
 ## 1.7.2 진단용 사전 배포 — 2026-11-12 (KST)
 
 - `AUDIOFLOW_LIVE=1`로 JVM 테스트 35개가 실패·오류·건너뜀 없이 통과했습니다. `assembleRelease`, `lintRelease`, `assembleDebugAndroidTest`가 통과했으며 Lint는 오류 0개·경고 9개입니다. 예외 메시지·요청 URL·파일 경로가 진단 문자열에 포함되지 않는 검사도 통과했습니다.

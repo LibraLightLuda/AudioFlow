@@ -47,13 +47,12 @@ internal data class UpdateAsset(val version: ReleaseVersion, val bytes: Long, va
 
 internal class UpdateException(message: String) : IOException(message)
 
-internal fun parseLatestUpdate(json: String, installed: ReleaseVersion): UpdateAsset? {
+internal fun parseLatestRelease(json: String): UpdateAsset {
     val release = JSONObject(json)
     val tag = release.optString("tag_name")
     val version = ReleaseVersion.parse(tag.removePrefix("v"))
         ?.takeIf { tag == "v$it" && !release.optBoolean("draft", true) && !release.optBoolean("prerelease", true) }
         ?: throw UpdateException("정식 릴리스 버전을 확인하지 못했어요.")
-    if (version <= installed) return null
     val assets = release.optJSONArray("assets") ?: throw UpdateException("릴리스에 설치용 APK가 없어요.")
     val entries = (0 until assets.length()).mapNotNull { assets.optJSONObject(it) }
         .filter { it.optString("name") == "AudioFlow-$version.apk" }
@@ -88,14 +87,14 @@ internal object ReleaseUpdate {
     private val metadataClient = client.newBuilder().callTimeout(20, TimeUnit.SECONDS).build()
     private val downloads = Mutex()
 
-    fun latest(installed: ReleaseVersion): UpdateAsset? {
+    fun latest(): UpdateAsset {
         val request = Request.Builder().url(RELEASE_API).header("Accept", "application/vnd.github+json")
             .header("User-Agent", "AudioFlow-updater").build()
         return metadataClient.newCall(request).execute().use {
             requireSuccess(it)
             val bytes = it.body?.byteStream()?.readLimited(1024 * 1024)
                 ?: throw UpdateException("릴리스 정보를 읽지 못했어요.")
-            parseLatestUpdate(bytes.toString(Charsets.UTF_8), installed)
+            parseLatestRelease(bytes.toString(Charsets.UTF_8))
         }
     }
 

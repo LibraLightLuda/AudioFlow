@@ -31,6 +31,22 @@ internal data class PracticeLoop(val videoId: String = "", val a: Long = 0, val 
 
 internal data class LyricLine(val timeMs: Long, val text: String)
 
+internal fun validateJsonDepth(text: String, maxDepth: Int = 32) {
+    var depth = 0
+    var quoted = false
+    var escaped = false
+    for (character in text) {
+        if (quoted) {
+            if (escaped) escaped = false else if (character == '\\') escaped = true else if (character == '"') quoted = false
+        } else when (character) {
+            '"' -> quoted = true
+            '{', '[' -> { depth++; require(depth <= maxDepth) { "JSON 구조가 너무 깊어요." } }
+            '}', ']' -> { depth--; require(depth >= 0) }
+        }
+    }
+    require(depth == 0 && !quoted)
+}
+
 internal fun recoverableNetworkFailure(error: Throwable, code: Int): Boolean = !radioAccessLimited(error) &&
     (code in setOf(2001, 2002) || generateSequence(error) { it.cause }.take(12).any {
         it is java.net.UnknownHostException || it is java.net.SocketTimeoutException || it is java.net.ConnectException || it is java.net.SocketException

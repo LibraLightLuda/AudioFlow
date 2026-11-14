@@ -307,13 +307,16 @@ class LocalStore(context: Context) {
         settings.edit { prefs -> prefs[versionChoicesKey] = ((prefs[versionChoicesKey].orEmpty().filterNot { it.startsWith("$key|") } + "$key|$id").takeLast(500)).toSet() }
     }
     internal suspend fun setListening(options: ListeningOptions) { settings.edit { it[listeningKey] = options.encode() } }
+    internal suspend fun updateListening(change: (ListeningOptions) -> ListeningOptions) {
+        settings.edit { it[listeningKey] = change(ListeningOptions.decode(it[listeningKey])).encode() }
+    }
     internal suspend fun blockTrack(id: String, block: Boolean) {
         require(YoutubeLink.isVideoId(id))
-        settings.edit { it[blockedTracksKey] = (it[blockedTracksKey].orEmpty() - id) + if (block) setOf(id) else emptySet() }
+        settings.edit { it[blockedTracksKey] = ((it[blockedTracksKey].orEmpty() - id) + if (block) setOf(id) else emptySet()).also { value -> require(value.size <= 5000) } }
     }
     internal suspend fun blockChannel(channel: String, block: Boolean) {
         require(channel.isNotBlank() && channel.length <= 500)
-        settings.edit { it[blockedChannelsKey] = (it[blockedChannelsKey].orEmpty() - channel) + if (block) setOf(channel) else emptySet() }
+        settings.edit { it[blockedChannelsKey] = ((it[blockedChannelsKey].orEmpty() - channel) + if (block) setOf(channel) else emptySet()).also { value -> require(value.size <= 1000) } }
     }
     internal suspend fun clearRecommendationBlocks() { settings.edit { it.remove(blockedTracksKey); it.remove(blockedChannelsKey) } }
     private fun trackKey(prefix: String, id: String): String { require(YoutubeLink.isVideoId(id)); return "${prefix}_$id" }

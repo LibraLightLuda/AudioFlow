@@ -77,7 +77,9 @@ internal fun LibraryBackup.encode(): ByteArray {
 
 internal fun decodeBackup(bytes: ByteArray): LibraryBackup {
     require(bytes.size <= BACKUP_BYTES)
-    val root = JSONObject(bytes.toString(Charsets.UTF_8))
+    val text = bytes.toString(Charsets.UTF_8)
+    validateJsonDepth(text)
+    val root = JSONObject(text)
     require(root.optString("format") == "audioflow-library" && root.optInt("version") in 1..2)
     var count = 0
     fun tracks(array: JSONArray): List<Track> {

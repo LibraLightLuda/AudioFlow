@@ -926,7 +926,6 @@ private fun PlayerScreen(
                         DropdownMenuItem(text = { Text("음향 설정") }, onClick = { more = false; openSound() })
                         if (current != null) {
                             val app = context.applicationContext as AudioFlowApp
-                            val feedbackScope = rememberCoroutineScope()
                             DropdownMenuItem(text = { Text("이 곡 추천 제외") }, onClick = { more = false
                                 app.saveLocal("추천 제외") { app.store.blockTrack(current.id, true) }
                             })

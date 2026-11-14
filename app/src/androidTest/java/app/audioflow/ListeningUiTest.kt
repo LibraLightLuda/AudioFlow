@@ -26,6 +26,8 @@ class ListeningUiTest {
         val track=Track("jNQXAC9IVRw","UI 연습곡","테스트",seconds=180)
         val oldGain=app.store.trackGain(track.id).first()
         val wasBlocked=track.id in app.store.blockedTracks.first()
+        val previousLyrics=app.store.lyrics(track.id).first()
+        app.store.setLyrics(track.id,"[00:00]내 검증 가사")
         val future=withContext(Dispatchers.Main) { MediaController.Builder(ui.activity,
             SessionToken(ui.activity,ComponentName(ui.activity,PlaybackService::class.java))).buildAsync() }
         val controller=future.get(15, TimeUnit.SECONDS)
@@ -47,7 +49,14 @@ class ListeningUiTest {
             ui.onNodeWithContentDescription("플레이어 더보기").performScrollTo().performClick()
             ui.onNodeWithText("이 곡 추천 제외").performClick()
             ui.waitUntil(5000) { runBlocking { track.id in app.store.blockedTracks.first() } }
+            ui.onNodeWithText("가사·자막").performScrollTo().performClick()
+            ui.waitUntil(5000) { ui.onAllNodes(hasText("내 LRC 파일")).fetchSemanticsNodes().isNotEmpty() }
+            ui.onNodeWithText("내 검증 가사",substring=true).assertExists()
+            ui.waitForIdle()
+            val lyricsCapture=InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("screencap -p /data/local/tmp/AudioFlow-lyrics.png")
+            ParcelFileDescriptor.AutoCloseInputStream(lyricsCapture).use { it.readBytes() }
         } finally {
+            app.store.setLyrics(track.id,previousLyrics)
             app.store.setTrackGain(track.id,oldGain); app.store.blockTrack(track.id,wasBlocked)
             withContext(Dispatchers.Main) { controller.clearMediaItems(); MediaController.releaseFuture(future) }
         }

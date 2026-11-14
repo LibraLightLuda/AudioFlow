@@ -17,6 +17,9 @@ android {
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
     buildFeatures { compose true }
+    testOptions {
+        unitTests.all { inputs.property('audioflowLive', System.getenv('AUDIOFLOW_LIVE') ?: '0') }
+    }
     buildTypes { debug { applicationIdSuffix '.debug' } }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17

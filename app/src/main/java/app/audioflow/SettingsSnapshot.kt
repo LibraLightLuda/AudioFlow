@@ -11,6 +11,7 @@ internal fun backupSettingAllowed(name: String) = name in backupSettingNames ||
 internal fun decodeSettingsSnapshot(snapshot: Map<String, String>): Map<String, Any> {
     require(snapshot.size <= 1000)
     fun stringSet(value: String, max: Int): Set<String> {
+        validateJsonDepth(value, 4)
         val array = JSONArray(value); require(array.length() <= max)
         return (0 until array.length()).map { array.getString(it) }.toSet()
     }

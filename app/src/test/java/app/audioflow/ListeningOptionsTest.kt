@@ -4,6 +4,11 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ListeningOptionsTest {
+    @Test fun importedJsonRejectsDeepNestingButAllowsBracketsInText() {
+        validateJsonDepth("{\"lyrics\":\"[00:01]가사 [문자열]\"}")
+        assertTrue(runCatching { validateJsonDepth("[".repeat(33) + "]".repeat(33)) }.isFailure)
+        assertTrue(runCatching { validateJsonDepth("{\"x\":\"unterminated}") }.isFailure)
+    }
     @Test fun policiesRoundTripAndRejectUnboundedSettings() {
         val value = ListeningOptions(AudioQuality.Saver, false, true, 64, 6, 20)
         assertEquals(value, ListeningOptions.decode(value.encode()))

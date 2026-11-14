@@ -99,7 +99,7 @@ internal fun CaptionPanel(videoId: String, positionMs: Long, seekable: Boolean, 
         Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surfaceContainer,
             shape = MaterialTheme.shapes.medium) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (language.isNotBlank()) Text("YouTube 제공 자막 · $language", style = MaterialTheme.typography.labelMedium)
+                if (language.isNotBlank()) Text(if (local != null) "내 LRC 파일" else "YouTube 제공 자막 · $language", style = MaterialTheme.typography.labelMedium)
                 if (message != null) Text(message.orEmpty(), style = MaterialTheme.typography.bodyLarge)
                 else if (cues.isNotEmpty()) LazyColumn(Modifier.heightIn(max = 280.dp), state = listState) {
                     itemsIndexed(cues) { index, cue ->

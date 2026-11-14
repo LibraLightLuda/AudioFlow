@@ -9,12 +9,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import kotlinx.coroutines.launch
 
 @Composable
 internal fun VersionControls(tracks: List<Track>, play: (List<Track>, Int) -> Unit) {
     val app = LocalContext.current.applicationContext as AudioFlowApp
-    val scope = rememberCoroutineScope()
     val choices by app.store.versionChoices.collectAsStateWithLifecycle(emptyMap())
     val groups = remember(tracks) { tracks.groupBy(::songVersionKey).filter { it.key.isNotBlank() && it.value.size > 1 }.values.toList() }
     var selected by remember(tracks) { mutableStateOf<List<Track>?>(null) }
@@ -32,7 +30,7 @@ internal fun VersionControls(tracks: List<Track>, play: (List<Track>, Int) -> Un
                 Text("${track.title}\n${track.channel}", Modifier.weight(1f).padding(8.dp))
             } }
         } }, confirmButton = { TextButton(onClick = {
-            scope.launch { runCatching { app.store.chooseVersion(versionDigest(variants.first()), variants[version].id) }.onFailure { app.reportFailure("대표 버전", it) } }
+            app.saveLocal("대표 버전") { app.store.chooseVersion(versionDigest(variants.first()), variants[version].id) }
             selected = null
         }) { Text("대표로 저장") } }, dismissButton = { TextButton(onClick = { play(variants, version); selected = null }) { Text("선택 버전 재생") } }) }
 }

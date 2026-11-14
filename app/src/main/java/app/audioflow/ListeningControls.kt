@@ -18,7 +18,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.session.MediaController
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 internal fun ChoiceSetting(title: String, detail: String, choices: List<String>, selected: Int, choose: (Int) -> Unit) {
@@ -38,39 +39,39 @@ internal fun ChoiceSetting(title: String, detail: String, choices: List<String>,
 @Composable
 internal fun ListeningSettings(store: LocalStore, controller: MediaController?, playing: Boolean) {
     val options by store.listening.collectAsStateWithLifecycle(ListeningOptions())
-    val scope = rememberCoroutineScope()
     val app = LocalContext.current.applicationContext as AudioFlowApp
     val bytes by app.cacheBytes.collectAsStateWithLifecycle()
     val health by app.playbackHealth.collectAsStateWithLifecycle()
     val diagnostic by app.diagnostic.collectAsStateWithLifecycle()
     val blocked by store.blockedTracks.collectAsStateWithLifecycle(emptySet())
     val channels by store.blockedChannels.collectAsStateWithLifecycle(emptySet())
-    var message by remember { mutableStateOf<String?>(null) }
-    fun change(action: suspend () -> Unit) { scope.launch {
-        runCatching { action() }.onFailure { app.reportFailure("감상 설정", it); message = "설정을 저장하지 못했어요." }
-    } }
-    ChoiceSetting("스트리밍 음질", options.quality.label, AudioQuality.entries.map { it.label }, options.quality.ordinal) {
-        change { store.setListening(options.copy(quality = AudioQuality.entries[it])) }
+    val memoryMiB by produceState(0L) {
+        value = withContext(Dispatchers.IO) { android.os.Debug.getPss() / 1024 }
+    }
+    fun change(action: suspend () -> Unit) { app.saveLocal("감상 설정", action) }
+    ChoiceSetting("스트리밍 음질", options.quality.label, AudioQuality.entries.map { it.label }, options.quality.ordinal) { index ->
+        change { store.updateListening { it.copy(quality = AudioQuality.entries[index]) } }
     }
     ListItem(headlineContent = { Text("오디오 전용 스트림만 허용") },
         supportingContent = { Text("켜면 영상 데이터가 포함된 대체 스트림을 사용하지 않아요. 음질 정책은 다음 스트림 조회부터 적용돼요.") },
-        trailingContent = { Switch(!options.allowVideo, { change { store.setListening(options.copy(allowVideo = !it)) } }) })
+        trailingContent = { Switch(!options.allowVideo, { checked -> change { store.updateListening { it.copy(allowVideo = !checked) } } }) })
     ListItem(headlineContent = { Text("연결 복구 후 이어 재생") },
         supportingContent = { Text("재생 의도가 유지된 네트워크 오류만 최대 두 번 복구해요. 접근 제한은 재시도하지 않아요.") },
-        trailingContent = { Switch(options.recoverNetwork, { change { store.setListening(options.copy(recoverNetwork = it)) } }) })
+        trailingContent = { Switch(options.recoverNetwork, { checked -> change { store.updateListening { it.copy(recoverNetwork = checked) } } }) })
     ChoiceSetting("다음 곡 준비 범위", "${options.preloadSeconds}초 · 무제한 데이터 연결에서 사용", listOf("3초", "6초", "10초"),
-        listOf(3,6,10).indexOf(options.preloadSeconds)) { change { store.setListening(options.copy(preloadSeconds = listOf(3,6,10)[it])) } }
+        listOf(3,6,10).indexOf(options.preloadSeconds)) { index -> change { store.updateListening { it.copy(preloadSeconds = listOf(3,6,10)[index]) } } }
     ChoiceSetting("오디오 디스크 캐시", "${bytes / (1024*1024)} MiB 사용 / ${options.cacheMiB} MiB 상한", listOf("24 MiB", "64 MiB", "128 MiB"),
-        listOf(24,64,128).indexOf(options.cacheMiB)) { change { store.setListening(options.copy(cacheMiB = listOf(24,64,128)[it])) } }
+        listOf(24,64,128).indexOf(options.cacheMiB)) { index -> change { store.updateListening { it.copy(cacheMiB = listOf(24,64,128)[index]) } } }
     SettingsRow("오디오 캐시 비우기", if (playing) "재생을 일시정지한 뒤 비울 수 있어요." else "곡 목록과 재생 기록은 유지해요.") {
         if (!playing) controller?.sendCustomCommand(ClearStreamCache, Bundle.EMPTY)
     }
     ChoiceSetting("취침 종료 페이드", if (options.fadeSeconds == 0) "즉시 종료" else "마지막 ${options.fadeSeconds}초 동안 음량 감소",
-        listOf("끄기", "10초", "20초", "30초"), listOf(0,10,20,30).indexOf(options.fadeSeconds)) {
-        change { store.setListening(options.copy(fadeSeconds = listOf(0,10,20,30)[it])) }
+        listOf("끄기", "10초", "20초", "30초"), listOf(0,10,20,30).indexOf(options.fadeSeconds)) { index ->
+        change { store.updateListening { it.copy(fadeSeconds = listOf(0,10,20,30)[index]) } }
     }
     SettingsRow("추천 제외 초기화", "곡 ${blocked.size}개 · 채널 ${channels.size}개 · 목록에서 삭제하지 않아요.") { change { store.clearRecommendationBlocks() } }
     Text("스트림 메모리 목표는 8 MiB예요. 앱 전체 메모리 상한을 뜻하지 않아요.", Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall)
+    Text("앱 메모리 조회값(PSS): $memoryMiB MiB", Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall)
     Text(health, Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall)
     var detail by remember { mutableStateOf(false) }
     SettingsRow("진단 정보", "요청 URL·쿠키·예외 메시지를 제외한 실패 단계만 표시해요.") { detail = !detail }
@@ -79,13 +80,11 @@ internal fun ListeningSettings(store: LocalStore, controller: MediaController?, 
         val clipboard = LocalClipboardManager.current
         TextButton(onClick = { clipboard.setText(AnnotatedString(diagnostic)) }) { Text("진단 정보 복사") }
     }
-    message?.let { Text(it) }
 }
 
 @Composable
 internal fun PracticeControls(videoId: String, position: Long, seekable: Boolean, controller: MediaController?) {
     val app = LocalContext.current.applicationContext as AudioFlowApp
-    val scope = rememberCoroutineScope()
     val loop by app.practice.collectAsStateWithLifecycle()
     val gain by remember(videoId) { app.store.trackGain(videoId) }.collectAsStateWithLifecycle(0)
     val marks by remember(videoId) { app.store.bookmarks(videoId) }.collectAsStateWithLifecycle(emptyList())
@@ -101,7 +100,7 @@ internal fun PracticeControls(videoId: String, position: Long, seekable: Boolean
                 app.practice.value = loop.copy(b = position); controller?.seekTo(loop.a)
             }) { Text("현재 위치를 B로 · 반복 시작") }
             TextButton(onClick = { app.practice.value = PracticeLoop() }) { Text("구간 반복 해제") }
-            TextButton(enabled = seekable, onClick = { scope.launch { runCatching { app.store.toggleBookmark(videoId, position) }.onFailure { app.reportFailure("북마크", it) } } }) {
+            TextButton(enabled = seekable, onClick = { app.saveLocal("북마크") { app.store.toggleBookmark(videoId, position) } }) {
                 Text("현재 위치 북마크")
             }
             marks.forEach { at -> Row {
@@ -112,7 +111,7 @@ internal fun PracticeControls(videoId: String, position: Long, seekable: Boolean
             Text("이 곡 음량 ${draftGain.toInt()} dB")
             Slider(draftGain, { draftGain = it }, valueRange = -12f..6f, steps = 17,
                 modifier = Modifier.semantics { contentDescription = "곡별 음량" },
-                onValueChangeFinished = { scope.launch { runCatching { app.store.setTrackGain(videoId, draftGain.toInt()) }.onFailure { app.reportFailure("곡 음량", it) } } })
+                onValueChangeFinished = { app.saveLocal("곡 음량") { app.store.setTrackGain(videoId, draftGain.toInt()) } })
             Text("원본 음량 차이는 직접 보정해요. 자동 음량 정규화가 아니며, 출력 피크 보호는 계속 적용돼요.", style = MaterialTheme.typography.bodySmall)
         }
     }

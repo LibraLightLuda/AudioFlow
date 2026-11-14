@@ -304,7 +304,8 @@ class LocalStore(context: Context) {
     internal val versionChoices = data.map { it[versionChoicesKey].orEmpty().associate { entry -> entry.substringBefore('|') to entry.substringAfter('|') } }.distinctUntilChanged()
     internal suspend fun chooseVersion(key: String, id: String) {
         require(key.matches(Regex("[0-9a-f]{64}")) && YoutubeLink.isVideoId(id))
-        settings.edit { prefs -> prefs[versionChoicesKey] = ((prefs[versionChoicesKey].orEmpty().filterNot { it.startsWith("$key|") } + "$key|$id").takeLast(500)).toSet() }
+        settings.edit { prefs -> prefs[versionChoicesKey] = (prefs[versionChoicesKey].orEmpty().filterNot { it.startsWith("$key|") } + "$key|$id").toSet()
+            .also { require(it.size <= 500) { "대표 버전은 500개까지 저장할 수 있어요." } } }
     }
     internal suspend fun setListening(options: ListeningOptions) { settings.edit { it[listeningKey] = options.encode() } }
     internal suspend fun updateListening(change: (ListeningOptions) -> ListeningOptions) {
@@ -448,7 +449,9 @@ class LocalStore(context: Context) {
             is Long -> prefs[longPreferencesKey(name)] = value
             is String -> prefs[stringPreferencesKey(name)] = value
             is Set<*> -> prefs[stringSetPreferencesKey(name)] = value.filterIsInstance<String>().toSet()
-        } } }
+        } }
+            require(prefs.asMap().filterKeys { it.name.startsWith("lyrics_") }.values.sumOf { it.toString().toByteArray().size } <= 1024 * 1024)
+        }
     }
 
     private fun encodeQueue(state: QueueState): String {

@@ -22,6 +22,7 @@ try {
     $toolDir = Join-Path $sdk 'build-tools\36.0.0'
     $env:ANDROID_HOME = $sdk
     $env:AUDIOFLOW_LIVE = if ($LiveChecks) { '1' } else { '0' }
+    New-Item -ItemType Directory -Path build -Force | Out-Null
     & .\gradlew.bat testDebugUnitTest assembleRelease lintRelease assembleDebugAndroidTest *> build/release.log
     if ($LASTEXITCODE -ne 0) { throw 'Build or validation failed. See build/release.log.' }
     New-Item -ItemType Directory -Path dist -Force | Out-Null

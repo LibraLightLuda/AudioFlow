@@ -12,6 +12,7 @@ class ListeningOptionsTest {
     @Test fun policiesRoundTripAndRejectUnboundedSettings() {
         val value = ListeningOptions(AudioQuality.Saver, false, true, 64, 6, 20)
         assertEquals(value, ListeningOptions.decode(value.encode()))
+        assertEquals(AudioQuality.Saver, ListeningOptions.decode("Saver|false|true|64|6|20").meteredQuality)
         assertEquals(ListeningOptions(), ListeningOptions.decode("High|true|true|999999|3|0"))
         assertFalse(PracticeLoop("one", 1000, 3000).contains("two", 5000))
         assertTrue(PracticeLoop("one", 1000, 3000).contains("one", 3000))

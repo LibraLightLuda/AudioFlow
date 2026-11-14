@@ -20,7 +20,8 @@ internal fun decodeSettingsSnapshot(snapshot: Map<String, String>): Map<String, 
         when {
             name in setOf("dark", "autoplay", "preload") -> value.toBooleanStrict()
             name == "color_theme" -> AppColorTheme.valueOf(value).name
-            name == "listening" -> ListeningOptions.decode(value).also { require(it.encode() == value) }.encode()
+            name == "listening" -> ListeningOptions.decode(value).also { require(it.encode() == value ||
+                (value.count { c -> c == '|' } == 5 && it.encode().substringBeforeLast('|') == value)) }.encode()
             name == "sound_profile" -> SoundProfile.decode(value).also {
                 require(it.encode() == value || (value.startsWith("1|") && it.encode().removeSuffix("|0").replaceFirst("2|", "1|") == value))
             }.encode()

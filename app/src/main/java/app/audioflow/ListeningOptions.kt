@@ -11,16 +11,18 @@ internal data class ListeningOptions(
     val cacheMiB: Int = 24,
     val preloadSeconds: Int = 3,
     val fadeSeconds: Int = 10,
+    val meteredQuality: AudioQuality = AudioQuality.Balanced,
 ) {
-    fun encode() = listOf(quality.name, allowVideo, recoverNetwork, cacheMiB, preloadSeconds, fadeSeconds).joinToString("|")
+    fun encode() = listOf(quality.name, allowVideo, recoverNetwork, cacheMiB, preloadSeconds, fadeSeconds, meteredQuality.name).joinToString("|")
     companion object {
         fun decode(raw: String?): ListeningOptions = runCatching {
             val fields = requireNotNull(raw).split('|')
-            require(fields.size == 6)
+            require(fields.size in 6..7)
             ListeningOptions(AudioQuality.valueOf(fields[0]), fields[1].toBooleanStrict(), fields[2].toBooleanStrict(),
                 fields[3].toInt().also { require(it in listOf(24, 64, 128)) },
                 fields[4].toInt().also { require(it in listOf(3, 6, 10)) },
-                fields[5].toInt().also { require(it in listOf(0, 10, 20, 30)) })
+                fields[5].toInt().also { require(it in listOf(0, 10, 20, 30)) },
+                AudioQuality.valueOf(fields.getOrElse(6) { fields[0] }))
         }.getOrDefault(ListeningOptions())
     }
 }

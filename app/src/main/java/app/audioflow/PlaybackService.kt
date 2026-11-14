@@ -116,6 +116,7 @@ class PlaybackService : MediaSessionService() {
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
             scope.launch {
+                YoutubeCatalog.configure(options, getSystemService(ConnectivityManager::class.java).isActiveNetworkMetered)
                 updatePreload()
                 if (capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) recoverNetwork()
             }
@@ -249,7 +250,7 @@ class PlaybackService : MediaSessionService() {
         scope.launch { app.store.listening.collect { value ->
             val previous = options
             options = value
-            YoutubeCatalog.configure(value)
+            YoutubeCatalog.configure(value, getSystemService(ConnectivityManager::class.java).isActiveNetworkMetered)
             if (value.cacheMiB != previous.cacheMiB) withContext(Dispatchers.IO) {
                 streamCache?.let { cacheEvictor.resize(it, value.cacheMiB * 1024L * 1024) }
             }

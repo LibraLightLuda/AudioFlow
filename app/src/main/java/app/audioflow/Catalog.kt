@@ -141,9 +141,12 @@ interface Catalog {
 
 object YoutubeCatalog : Catalog {
     @Volatile private var options = ListeningOptions()
-    internal fun configure(value: ListeningOptions) {
-        if (options.quality != value.quality || options.allowVideo != value.allowVideo) synchronized(streams) { streams.clear() }
+    @Volatile private var activeQuality = AudioQuality.High
+    internal fun configure(value: ListeningOptions, metered: Boolean = false) {
+        val quality = if (metered) value.meteredQuality else value.quality
+        if (activeQuality != quality || options.allowVideo != value.allowVideo) synchronized(streams) { streams.clear() }
         options = value
+        activeQuality = quality
     }
     private val service = ServiceList.YouTube
     private val streams = LinkedHashMap<String, Pair<ResolvedTrack, Long>>(16, 0.75f, true)
@@ -327,7 +330,7 @@ object YoutubeCatalog : Catalog {
         }
         val availableAudio = extractor.audioStreams.filter { it.isProgressive() }
         val audioCandidates = availableAudio.filter { it.audioTrackType?.name == "ORIGINAL" }.ifEmpty { availableAudio }
-        val preferred = audioCandidates.filter { it.averageBitrate <= options.quality.maxKbps }
+        val preferred = audioCandidates.filter { it.averageBitrate <= activeQuality.maxKbps }
         val audio = (preferred.ifEmpty { audioCandidates.sortedBy { it.averageBitrate }.take(1) })
             .maxWithOrNull(compareBy({ it.audioTrackType?.name == "ORIGINAL" }, { it.averageBitrate }))
         val selected = audio ?: extractor.videoStreams.filter { options.allowVideo && it.isProgressive() }

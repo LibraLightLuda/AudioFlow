@@ -18,6 +18,19 @@ class ImprovementDeviceTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private val song = Track("jNQXAC9IVRw", "노래", "테스트", seconds = 180)
 
+    @Test fun preferenceEditsPreserveIndependentFields() = runBlocking {
+        val store=(context as AudioFlowApp).store
+        val previous=store.listening.first()
+        try {
+            store.updateListening { it.copy(quality=AudioQuality.Saver) }
+            store.updateListening { it.copy(meteredQuality=AudioQuality.High,cacheMiB=64) }
+            val restored=store.listening.first()
+            assertEquals(AudioQuality.Saver,restored.quality)
+            assertEquals(AudioQuality.High,restored.meteredQuality)
+            assertEquals(64,restored.cacheMiB)
+        } finally { store.setListening(previous) }
+    }
+
     @Test fun positionCheckpointsDoNotRewriteTheLibrarySettingsFile() = runBlocking {
         val store = (context as AudioFlowApp).store
         val previous = store.readQueue()

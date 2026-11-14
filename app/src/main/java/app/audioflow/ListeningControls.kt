@@ -49,8 +49,12 @@ internal fun ListeningSettings(store: LocalStore, controller: MediaController?, 
         value = withContext(Dispatchers.IO) { android.os.Debug.getPss() / 1024 }
     }
     fun change(action: suspend () -> Unit) { app.saveLocal("감상 설정", action) }
-    ChoiceSetting("스트리밍 음질", options.quality.label, AudioQuality.entries.map { it.label }, options.quality.ordinal) { index ->
+    ChoiceSetting("스트리밍 음질", "일반 연결 · ${options.quality.label}", AudioQuality.entries.map { it.label }, options.quality.ordinal) { index ->
         change { store.updateListening { it.copy(quality = AudioQuality.entries[index]) } }
+    }
+    ChoiceSetting("데이터 제한 연결 음질", "${options.meteredQuality.label} · Android가 제한 연결로 분류한 모바일/Wi-Fi",
+        AudioQuality.entries.map { it.label }, options.meteredQuality.ordinal) { index ->
+        change { store.updateListening { it.copy(meteredQuality = AudioQuality.entries[index]) } }
     }
     ListItem(headlineContent = { Text("오디오 전용 스트림만 허용") },
         supportingContent = { Text("켜면 영상 데이터가 포함된 대체 스트림을 사용하지 않아요. 음질 정책은 다음 스트림 조회부터 적용돼요.") },

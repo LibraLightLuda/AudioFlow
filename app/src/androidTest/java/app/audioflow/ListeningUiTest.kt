@@ -21,7 +21,7 @@ import java.util.concurrent.TimeUnit
 
 class ListeningUiTest {
     @get:Rule val ui = createAndroidComposeRule<MainActivity>()
-    @Test fun playerToolsAndRecommendationExclusionAreReachable() = runBlocking {
+    @Test fun playerToolsAndRecommendationExclusionAreReachable() = runBlocking<Unit> {
         val app=ui.activity.application as AudioFlowApp
         val track=Track("jNQXAC9IVRw","UI 연습곡","테스트",seconds=180)
         val oldGain=app.store.trackGain(track.id).first()

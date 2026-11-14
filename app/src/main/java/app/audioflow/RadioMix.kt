@@ -105,6 +105,7 @@ internal class RadioMix(
     private val search: suspend (String) -> CatalogResult = YoutubeCatalog::radioSearch,
     discovery: List<String> = radioDiscoveryQueries.shuffled(),
     private val now: () -> Long = System::currentTimeMillis,
+    private val allowed: (Track) -> Boolean = { true },
 ) {
     private val taste = RadioTaste(favorites, history)
     private val sources = (taste.queries().take(1) + discovery.take(1) + taste.queries().drop(1) + discovery.drop(1)).distinct()
@@ -118,7 +119,7 @@ internal class RadioMix(
             val heard = recent.takeLast(window)
             val ids = heard.mapTo(hashSetOf(), Track::id)
             val songs = (heard + queued).mapTo(hashSetOf()) { it.artist() to it.song() }
-            return pool.values.filter { it.id !in unavailable && it.id !in ids && (it.artist() to it.song()) !in songs }
+            return pool.values.filter { allowed(it) && it.id !in unavailable && it.id !in ids && (it.artist() to it.song()) !in songs }
         }
         var failure: Exception? = null
         repeat(2) {

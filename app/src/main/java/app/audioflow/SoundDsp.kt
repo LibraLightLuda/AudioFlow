@@ -67,8 +67,8 @@ internal class SoundDsp(private val rate: Int, private val channels: Int) {
             else -> 0.0
         }
         val maxBoost = soundBands.indices.maxOf { if (filters[it] != null) profile.gains[it].coerceAtLeast(0) else 0 }
-        gain = 10.0.pow(-maxBoost / 20.0) / (1 + spread)
-        active = spread > 0 || filters.any { it != null }
+        gain = 10.0.pow((profile.preampDb.coerceIn(-24, 12) - maxBoost) / 20.0) / (1 + spread)
+        active = spread > 0 || filters.any { it != null } || profile.preampDb != 0
     }
 
     fun process(frame: FloatArray) {

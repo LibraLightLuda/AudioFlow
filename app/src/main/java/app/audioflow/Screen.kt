@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.os.SystemClock
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
@@ -39,6 +40,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -53,44 +55,13 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import coil.compose.AsyncImage
 import java.util.Locale
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 private enum class Page(val title: String) { Home("홈"), Library("라이브러리"), Settings("설정") }
 private enum class Shelf(val title: String) { Favorite("즐겨찾기"), History("재생 기록"), Playlists("플레이리스트") }
-
-private data class PlaybackUi(
-    val queue: List<Track> = emptyList(),
-    val index: Int = -1,
-    val position: Long = 0,
-    val duration: Long = 0,
-    val playing: Boolean = false,
-    val buffering: Boolean = false,
-    val seekable: Boolean = false,
-    val hasNext: Boolean = false,
-    val speed: Float = 1f,
-    val repeat: Int = 0,
-    val shuffle: Boolean = false,
-    val error: String? = null,
-    val diagnostic: String? = null,
-) {
-    val current get() = queue.getOrNull(index)
-}
-
-private fun MediaController.readPlayback(knownQueue: List<Track>? = null): PlaybackUi {
-    val queue = knownQueue?.takeIf { it.size == mediaItemCount } ?: (0 until mediaItemCount).map { getMediaItemAt(it).track() }
-    val track = queue.getOrNull(currentMediaItemIndex)
-    return PlaybackUi(
-        queue,
-        currentMediaItemIndex, currentPosition,
-        duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: (track?.seconds ?: 0).coerceAtLeast(0) * 1000,
-        isPlaying, playbackState == Player.STATE_BUFFERING && playWhenReady, isCurrentMediaItemSeekable,
-        hasNextMediaItem(), playbackParameters.speed, repeatMode, shuffleModeEnabled,
-        playerError?.let(::playbackError),
-        playerError?.let(::playbackDiagnostic),
-    )
-}
 
 private fun MediaController.togglePlay() {
     if (playerError != null) {
@@ -131,6 +102,7 @@ internal fun AudioFlowScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
+    LaunchedEffect(app) { app.issues.collectLatest { snackbar.showSnackbar(it) } }
     var page by rememberSaveable { mutableStateOf(Page.Home) }
     var shelf by rememberSaveable { mutableStateOf(Shelf.Favorite) }
     var playlistId by rememberSaveable { mutableStateOf<Long?>(null) }
@@ -147,7 +119,16 @@ internal fun AudioFlowScreen(
     var deleteList by remember { mutableStateOf<LocalPlaylist?>(null) }
     var renameList by remember { mutableStateOf<LocalPlaylist?>(null) }
     var saveQueue by remember { mutableStateOf<List<Track>?>(null) }
-    var playback by remember { mutableStateOf(PlaybackUi()) }
+    val activity = context as androidx.activity.ComponentActivity
+    val playbackModel = remember(activity) { androidx.lifecycle.ViewModelProvider(activity)[PlaybackModel::class.java] }
+    val libraryModel = remember(activity) { androidx.lifecycle.ViewModelProvider(activity)[LibraryModel::class.java] }
+    val playback by playbackModel.state.collectAsStateWithLifecycle()
+    LaunchedEffect(libraryModel) {
+        libraryModel.notices.collectLatest { notice ->
+            val result = snackbar.showSnackbar(notice.text, actionLabel = if (notice.undo != null) "실행 취소" else null)
+            if (result == SnackbarResult.ActionPerformed) notice.undo?.let { libraryModel.change(it) }
+        }
+    }
     var playRequest by remember { mutableStateOf<Job?>(null) }
     var importing by remember { mutableStateOf(false) }
     var excludeTrack by remember { mutableStateOf<Track?>(null) }
@@ -161,28 +142,8 @@ internal fun AudioFlowScreen(
     }
 
     DisposableEffect(controller) {
-        if (controller == null) return@DisposableEffect onDispose {}
-        val listener = object : Player.Listener {
-            override fun onEvents(player: Player, events: Player.Events) {
-                val previousQueue = playback.queue.takeUnless {
-                    events.containsAny(Player.EVENT_TIMELINE_CHANGED, Player.EVENT_MEDIA_METADATA_CHANGED)
-                }
-                playback = controller.readPlayback(previousQueue)
-            }
-        }
-        playback = controller.readPlayback()
-        controller.addListener(listener)
-        onDispose {
-            controller.removeListener(listener)
-            playRequest?.cancel()
-        }
-    }
-    LaunchedEffect(controller, playback.playing) {
-        if (controller == null || !playback.playing) return@LaunchedEffect
-        while (true) {
-            delay(500)
-            playback = playback.copy(position = controller.currentPosition)
-        }
+        playbackModel.bind(controller)
+        onDispose { playbackModel.bind(null); playRequest?.cancel() }
     }
     LaunchedEffect(shareCount) {
         if (shareCount > 0) {
@@ -203,17 +164,7 @@ internal fun AudioFlowScreen(
     fun toast(message: String) {
         scope.launch { snackbar.showSnackbar(message) }
     }
-    fun update(action: suspend () -> Unit) {
-        scope.launch {
-            try {
-                action()
-            } catch (failure: kotlinx.coroutines.CancellationException) {
-                throw failure
-            } catch (_: Exception) {
-                snackbar.showSnackbar("기기에 변경 사항을 저장하지 못했어요.")
-            }
-        }
-    }
+    fun update(action: suspend () -> Unit) { libraryModel.change(action) }
     fun startRadio() {
         playRequest?.cancel()
         controller?.sendCustomCommand(StartRadio, Bundle.EMPTY)
@@ -274,7 +225,7 @@ internal fun AudioFlowScreen(
         else cleanup = id to candidates
     }
     fun removeHistory(track: Track) {
-        update { dao.removeHistory(track.id) }
+        libraryModel.removeHistory(track.id)
     }
     fun importPlaylist(result: CatalogResult) {
         if (importing) return
@@ -312,7 +263,7 @@ internal fun AudioFlowScreen(
     }
     val favoriteIds = remember(favorites) { favorites.mapTo(hashSetOf()) { it.track.id } }
     val callbacks = TrackActions(
-        favoriteIds, { update { dao.toggleFavorite(it) } },
+        favoriteIds, libraryModel::toggleFavorite,
         ::enqueue,
         { playlistPicker = it },
         ::openYouTube,
@@ -327,7 +278,9 @@ internal fun AudioFlowScreen(
             bottomBar = {
                 if (!playerOpen) Column {
                     playback.current?.let { track ->
-                        MiniPlayer(track, playback, { playerOpen = true }) { controller?.togglePlay() }
+                        MiniPlayer(track, playback, { playerOpen = true }, { controller?.togglePlay() }) {
+                            controller?.let { if (it.hasNextMediaItem()) { it.seekToNextMediaItem(); if (it.playbackState == Player.STATE_IDLE) it.prepare(); it.play() } }
+                        }
                     }
                     NavigationBar {
                         Page.entries.forEach { destination ->
@@ -369,7 +322,7 @@ internal fun AudioFlowScreen(
                         modifier, shelf, { shelf = it }, favorites.map { it.track }, history.map { it.track },
                         playlists, playlist, entries.map { it.track }, { playlistId = it }, { createList = true },
                         { deleteList = it }, { renameList = it }, { track -> playlist?.let { list ->
-                            update { dao.removeFromPlaylist(list.id, track.id) }
+                            libraryModel.removeFromPlaylist(list.id, track.id)
                         } }, ::removeHistory, ::findDuplicates, callbacks, { tracks, index -> play(tracks, index) },
                         { ids -> playlist?.let { list -> update { dao.removeDuplicates(list.id, ids) } } },
                     )
@@ -810,7 +763,12 @@ private fun LibraryScreen(
     var sort by rememberSaveable(active?.id) { mutableIntStateOf(0) }
     var selecting by remember(active?.id) { mutableStateOf(false) }
     var selected by remember(active?.id) { mutableStateOf(emptySet<String>()) }
-    val tracks = if (active != null) remember(entries, query, sort) {
+    val store = (LocalContext.current.applicationContext as AudioFlowApp).store
+    val globalSearch = active == null && query.isNotBlank()
+    val results by remember(query, active?.id) {
+        if (globalSearch) store.dao.searchLibrary(query.trim()) else kotlinx.coroutines.flow.flowOf(emptyList())
+    }.collectAsStateWithLifecycle(emptyList())
+    val tracks = if (globalSearch) results.map { it.saved.track } else if (active != null) remember(entries, query, sort) {
         val filtered = entries.filter { query.isBlank() || it.title.contains(query.trim(), true) || it.channel.contains(query.trim(), true) }
         when (sort) {
             1 -> filtered.sortedBy { it.title.lowercase(Locale.ROOT) }
@@ -826,6 +784,8 @@ private fun LibraryScreen(
         item {
             Headline("MY COLLECTION", "라이브러리", "이 기기에 저장된 트랙과 목록")
             if (active == null) {
+                OutlinedTextField(query, { query = it.take(100) }, Modifier.fillMaxWidth(),
+                    label = { Text("라이브러리 전체 검색 · 제목/채널/목록") }, singleLine = true)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Shelf.entries.forEach { FilterChip(selected = shelf == it, onClick = { selectShelf(it) }, label = { Text(it.title) }) }
                 }
@@ -856,7 +816,8 @@ private fun LibraryScreen(
                 }
             }
         }
-        if (shelf == Shelf.Playlists && active == null) {
+        item { VersionControls(tracks, play) }
+        if (shelf == Shelf.Playlists && active == null && !globalSearch) {
             item {
                 Button(onClick = create) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(6.dp)); Text("새 플레이리스트") }
                 if (lists.isEmpty()) EmptyState("저장된 플레이리스트가 없어요.")
@@ -877,7 +838,14 @@ private fun LibraryScreen(
                     style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
             }
             itemsIndexed(tracks, key = { _, track -> track.id }) { index, track ->
-                if (active == null && shelf == Shelf.History) {
+                if (globalSearch) {
+                    Column {
+                        Text(results.getOrNull(index)?.let { hit -> listOfNotNull(
+                            "즐겨찾기".takeIf { hit.saved.favoriteAt > 0 }, "재생 기록".takeIf { hit.saved.playedAt > 0 }, hit.locations
+                        ).joinToString(" · ") }.orEmpty(), style = MaterialTheme.typography.labelSmall)
+                        TrackRow(track, actions, { play(tracks, index) })
+                    }
+                } else if (active == null && shelf == Shelf.History) {
                     RemovableTrackRow(track, actions, { play(tracks, index) }, { removeHistory(track) }, "재생 기록에서 삭제")
                 } else if (active != null && selecting) {
                     fun toggle() { selected = if (track.id in selected) selected - track.id else selected + track.id }
@@ -894,7 +862,7 @@ private fun LibraryScreen(
 
 
 @Composable
-private fun MiniPlayer(track: Track, state: PlaybackUi, expand: () -> Unit, toggle: () -> Unit) {
+private fun MiniPlayer(track: Track, state: PlaybackUi, expand: () -> Unit, toggle: () -> Unit, next: () -> Unit) {
     Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp),
         shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
         Column {
@@ -909,6 +877,7 @@ private fun MiniPlayer(track: Track, state: PlaybackUi, expand: () -> Unit, togg
                             style = MaterialTheme.typography.bodySmall)
                     }
                 }
+                IconButton(onClick = next, enabled = state.hasNext) { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "다음 곡") }
                 TextButton(onClick = toggle) {
                     Text(when {
                         state.error != null -> "재시도"
@@ -955,6 +924,16 @@ private fun PlayerScreen(
                     IconButton(onClick = { more = true }) { Icon(Icons.Default.MoreVert, "플레이어 더보기") }
                     DropdownMenu(more, { more = false }) {
                         DropdownMenuItem(text = { Text("음향 설정") }, onClick = { more = false; openSound() })
+                        if (current != null) {
+                            val app = context.applicationContext as AudioFlowApp
+                            val feedbackScope = rememberCoroutineScope()
+                            DropdownMenuItem(text = { Text("이 곡 추천 제외") }, onClick = { more = false
+                                app.saveLocal("추천 제외") { app.store.blockTrack(current.id, true) }
+                            })
+                            DropdownMenuItem(text = { Text("이 채널 추천 제외") }, onClick = { more = false
+                                app.saveLocal("추천 제외") { app.store.blockChannel(current.channelUrl.ifBlank { current.channel }, true) }
+                            })
+                        }
                         DropdownMenuItem(text = { Text("재생 종료") }, enabled = controller != null, onClick = {
                             more = false
                             controller?.sendCustomCommand(StopPlayback, Bundle.EMPTY)
@@ -1005,7 +984,15 @@ private fun PlayerScreen(
                         {
                         Row {
                             Icon(Icons.Default.Menu, "길게 눌러 순서 이동",
-                                Modifier.size(44.dp).padding(10.dp).pointerInput(state.queue, index, controller) {
+                                Modifier.size(48.dp).semantics {
+                                    customActions = listOf(
+                                        androidx.compose.ui.semantics.CustomAccessibilityAction("대기열에서 위로 이동") {
+                                            if (index > 0) { controller?.moveMediaItem(index, index - 1); true } else false
+                                        },
+                                        androidx.compose.ui.semantics.CustomAccessibilityAction("대기열에서 아래로 이동") {
+                                            if (index < state.queue.lastIndex) { controller?.moveMediaItem(index, index + 1); true } else false
+                                        })
+                                }.padding(10.dp).pointerInput(state.queue, index, controller) {
                                     var y = 0f
                                     detectDragGesturesAfterLongPress(
                                         onDragStart = {
@@ -1072,7 +1059,9 @@ private fun PlayerScreen(
                     }
                     TextButton(onClick = { controller?.seekToNextMediaItem() }, enabled = state.hasNext) { Text("다음") }
                 }
-                if (state.diagnostic != null) SelectionContainer {
+                var showDiagnostics by remember(current.id) { mutableStateOf(false) }
+                if (state.diagnostic != null) TextButton(onClick = { showDiagnostics = !showDiagnostics }) { Text("상세 오류 정보") }
+                if (state.diagnostic != null && showDiagnostics) SelectionContainer {
                     Text("오류 정보 · ${state.diagnostic}", style = MaterialTheme.typography.bodySmall)
                 }
                 if (autoplayReason != null) Text(autoplayReason, style = MaterialTheme.typography.labelMedium)
@@ -1098,6 +1087,7 @@ private fun PlayerScreen(
                     }) { Text("YouTube에서 열기") }
                 }
                 PlaybackOptions(controller, state, deadline, radio.phase != RadioPhase.Off)
+                PracticeControls(current.id, state.position, state.seekable, controller)
                 CaptionPanel(current.id, state.position, state.seekable) { controller?.seekTo(it) }
             }
         }
@@ -1126,6 +1116,7 @@ private fun SeekBar(id: String, state: PlaybackUi, seek: (Long) -> Unit) {
 
 @Composable
 private fun PlaybackOptions(controller: MediaController?, state: PlaybackUi, deadline: Long, radioActive: Boolean) {
+    val sleepAtEnd by (LocalContext.current.applicationContext as AudioFlowApp).sleepAtEnd.collectAsStateWithLifecycle()
     var speeds by remember { mutableStateOf(false) }
     var timer by remember { mutableStateOf(false) }
     var minutesLeft by remember(deadline) { mutableLongStateOf(0L) }
@@ -1156,9 +1147,12 @@ private fun PlaybackOptions(controller: MediaController?, state: PlaybackUi, dea
             if (speeds) PlaybackSpeedDialog(state.speed, { speeds = false }) { controller?.setPlaybackSpeed(it) }
         }
         Box {
-            AssistChip(onClick = { timer = true }, label = { Text(if (deadline > 0) "취침 · ${minutesLeft}분" else "취침 타이머") },
+            AssistChip(onClick = { timer = true }, label = { Text(if (sleepAtEnd) "현재 곡 종료까지" else if (deadline > 0) "취침 · ${minutesLeft}분" else "취침 타이머") },
                 enabled = controller != null)
             DropdownMenu(expanded = timer, onDismissRequest = { timer = false }) {
+                DropdownMenuItem(text = { Text("현재 곡이 끝나면 종료") }, onClick = {
+                    controller?.sendCustomCommand(SleepTimer, Bundle().apply { putBoolean("atEnd", true) }); timer = false
+                })
                 listOf(15, 30, 45, 60, 90, 120, 0).forEach { minutes ->
                     DropdownMenuItem(text = { Text(if (minutes == 0) "타이머 끄기" else "${minutes}분 후 종료") }, onClick = {
                         controller?.sendCustomCommand(SleepTimer, Bundle().apply { putInt("minutes", minutes) })
@@ -1182,20 +1176,21 @@ private fun SettingsScreen(
     val scope = rememberCoroutineScope()
     var section by rememberSaveable { mutableStateOf("설정") }
     BackHandler(section != "설정") { section = "설정" }
-    key(section) { LazyColumn(modifier, contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp)) {
-        item {
+    key(section) { Column(modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()).padding(horizontal = 18.dp, vertical = 8.dp)) {
+        run {
             if (section != "설정") TextButton(onClick = { section = "설정" }) { Text("설정으로 돌아가기") }
             Headline("PREFERENCES", section, if (section == "설정") "나에게 맞는 감상 환경을 만들어요." else null)
         }
         if (section == "설정") {
-            item { SettingsRow("재생", "배속 · 반복 · 취침 타이머 · 이어 재생") { section = "재생" } }
-            item { SettingsRow("음향 설정", "이퀄라이저 · 공간 음향 · 프리셋", openSound) }
-            item { SettingsRow("화면과 색 테마", "${colorTheme.title} · ${if (dark) "다크 모드" else "라이트 모드"}") { section = "화면과 색 테마" } }
-            item { SettingsRow("기기 저장", "라이브러리 백업 · 복원 · 재생 기록") { section = "기기 저장" } }
-            item { SettingsRow("앱 업데이트", "최신 버전과 개선사항 확인") { section = "앱 업데이트" } }
+            run { SettingsRow("재생", "배속 · 반복 · 취침 타이머 · 이어 재생") { section = "재생" } }
+            run { SettingsRow("음향 설정", "이퀄라이저 · 공간 음향 · 프리셋", openSound) }
+            run { SettingsRow("화면과 색 테마", "${colorTheme.title} · ${if (dark) "다크 모드" else "라이트 모드"}") { section = "화면과 색 테마" } }
+            run { SettingsRow("기기 저장", "라이브러리 백업 · 복원 · 재생 기록") { section = "기기 저장" } }
+            run { SettingsRow("앱 업데이트", "최신 버전과 개선사항 확인") { section = "앱 업데이트" } }
         }
-        if (section == "재생") item {
+        if (section == "재생") run {
             PlaybackOptions(controller, playback, deadline, radioActive)
+            ListeningSettings(store, controller, playback.playing || playback.buffering)
             Text("오디오 전용 스트림을 먼저 사용해요. 제공되지 않으면 영상이 포함된 스트림에서 소리만 재생해요.",
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             ListItem(headlineContent = { Text("다음 곡 미리 준비") },
@@ -1206,29 +1201,29 @@ private fun SettingsScreen(
                 trailingContent = { Switch(autoplay, { scope.launch { store.setAutoplay(it) } }) })
         }
         if (section == "화면과 색 테마") {
-            item {
+            run {
             ListItem(headlineContent = { Text("다크 모드") }, trailingContent = {
                 Switch(checked = dark, onCheckedChange = setDark,
                     modifier = Modifier.semantics { contentDescription = "다크 모드" })
             })
             SectionTitle("컬러 테마", 0)
             }
-            AppColorTheme.entries.forEach { theme -> item {
+            AppColorTheme.entries.forEach { theme -> run {
                 ListItem(headlineContent = { Text(theme.title) },
                     leadingContent = { Box(Modifier.size(32.dp).clip(CircleShape).background(if (dark) theme.dark else theme.light)) },
                     trailingContent = { RadioButton(colorTheme == theme, onClick = null) },
                     modifier = Modifier.selectable(colorTheme == theme, role = Role.RadioButton) { setColorTheme(theme) })
             } }
-            item { Text("선택한 색은 앱 전체에 바로 적용되고 기기에 저장돼요.", Modifier.padding(16.dp),
+            run { Text("선택한 색은 앱 전체에 바로 적용되고 기기에 저장돼요.", Modifier.padding(16.dp),
                 style = MaterialTheme.typography.bodyMedium) }
         }
-        if (section == "기기 저장") item {
-            LibraryBackupControls(store.dao)
+        if (section == "기기 저장") run {
+            LibraryBackupControls(store, controller)
             ListItem(headlineContent = { Text("재생 기록 지우기") },
                 supportingContent = { Text("최근 재생과 트랙별 재생 위치를 삭제해요.") },
                 modifier = Modifier.clickable(onClick = clearHistory))
         }
-        if (section == "앱 업데이트") item { UpdateControls(openInstalledNotes) }
+        if (section == "앱 업데이트") run { UpdateControls(openInstalledNotes) }
     } }
 }
 

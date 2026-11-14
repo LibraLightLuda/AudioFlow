@@ -3,7 +3,8 @@ package app.audioflow
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class LibraryBackup(val favorites: List<Track>, val playlists: List<BackupPlaylist>)
+data class LibraryBackup(val favorites: List<Track>, val playlists: List<BackupPlaylist>,
+    val settings: Map<String, String> = emptyMap(), val history: List<SavedTrack> = emptyList(), val queue: QueueState? = null)
 
 data class BackupPlaylist(val name: String, val isDefault: Boolean, val tracks: List<Track>)
 
@@ -14,7 +15,7 @@ data class BackupPreview(
 ) {
     val newTracks get() = additions.favorites.size + additions.playlists.sumOf { it.tracks.size }
     val newPlaylists get() = additions.playlists.count { !it.isDefault }
-    val hasChanges get() = newTracks > 0 || newPlaylists > 0
+    val hasChanges get() = newTracks > 0 || newPlaylists > 0 || additions.settings.isNotEmpty() || additions.history.isNotEmpty() || additions.queue != null
 }
 
 internal fun previewBackup(current: LibraryBackup, incoming: LibraryBackup): BackupPreview {
@@ -40,7 +41,7 @@ internal fun previewBackup(current: LibraryBackup, incoming: LibraryBackup): Bac
             null
         }
     }
-    return BackupPreview(LibraryBackup(favorites, playlists), duplicateTracks, duplicateLists)
+    return BackupPreview(LibraryBackup(favorites, playlists, incoming.settings, incoming.history, incoming.queue), duplicateTracks, duplicateLists)
 }
 
 internal const val BACKUP_BYTES = 4 * 1024 * 1024
@@ -50,7 +51,8 @@ private const val BACKUP_LISTS = 1_000
 private fun backupChannel(raw: String) = (YoutubeLink.fromText(raw) as? YoutubeLink.Channel)?.url.orEmpty()
 
 internal fun LibraryBackup.encode(): ByteArray {
-    require(playlists.size <= BACKUP_LISTS && favorites.size.toLong() + playlists.sumOf { it.tracks.size.toLong() } <= BACKUP_TRACKS)
+    require(playlists.size <= BACKUP_LISTS && favorites.size.toLong() + playlists.sumOf { it.tracks.size.toLong() } + history.size + (queue?.tracks?.size ?: 0) <= BACKUP_TRACKS)
+    decodeSettingsSnapshot(settings)
     fun tracks(items: List<Track>) = JSONArray().apply {
         items.forEach { track ->
             put(JSONObject().put("id", track.id).put("title", track.title.take(500))
@@ -63,15 +65,20 @@ internal fun LibraryBackup.encode(): ByteArray {
             put(JSONObject().put("name", list.name).put("default", list.isDefault).put("tracks", tracks(list.tracks)))
         }
     }
-    return JSONObject().put("format", "audioflow-library").put("version", 1)
-        .put("favorites", tracks(favorites)).put("playlists", lists).toString(2).toByteArray(Charsets.UTF_8)
+    return JSONObject().put("format", "audioflow-library").put("version", 2)
+        .put("favorites", tracks(favorites)).put("playlists", lists).put("settings", JSONObject(settings))
+        .put("history", JSONArray().apply { history.forEach { row -> put(JSONObject().put("track", tracks(listOf(row.track)).getJSONObject(0))
+            .put("at", row.playedAt).put("position", row.positionMs)) } })
+        .put("queue", queue?.let { q -> JSONObject().put("tracks", tracks(q.tracks)).put("index", q.index).put("position", q.position)
+            .put("speed", q.speed).put("repeat", q.repeat).put("shuffle", q.shuffle) })
+        .toString(2).toByteArray(Charsets.UTF_8)
         .also { require(it.size <= BACKUP_BYTES) }
 }
 
 internal fun decodeBackup(bytes: ByteArray): LibraryBackup {
     require(bytes.size <= BACKUP_BYTES)
     val root = JSONObject(bytes.toString(Charsets.UTF_8))
-    require(root.optString("format") == "audioflow-library" && root.optInt("version") == 1)
+    require(root.optString("format") == "audioflow-library" && root.optInt("version") in 1..2)
     var count = 0
     fun tracks(array: JSONArray): List<Track> {
         count += array.length()
@@ -96,5 +103,20 @@ internal fun decodeBackup(bytes: ByteArray): LibraryBackup {
         require(name.isNotEmpty())
         BackupPlaylist(name, list.optBoolean("default"), tracks(list.getJSONArray("tracks")))
     }
-    return LibraryBackup(favorites, playlists)
+    val settings = root.optJSONObject("settings")?.let { obj -> obj.keys().asSequence().associateWith { obj.getString(it) } }.orEmpty()
+    decodeSettingsSnapshot(settings)
+    val history = root.optJSONArray("history")?.let { array ->
+        require(array.length() <= 1000)
+        List(array.length()) { index -> val item = array.getJSONObject(index)
+            SavedTrack(tracks(JSONArray().put(item.getJSONObject("track"))).single(),
+                playedAt = item.getLong("at").also { require(it in 0..4_102_444_800_000L) },
+                positionMs = item.optLong("position").also { require(it in 0..31_536_000_000L) })
+        }
+    }.orEmpty()
+    val queue = root.optJSONObject("queue")?.let { q ->
+        val entries = tracks(q.getJSONArray("tracks")); require(entries.size <= 200)
+        QueueState(entries, q.optInt("index").coerceIn(0, entries.lastIndex.coerceAtLeast(0)), q.optLong("position").coerceIn(0,31_536_000_000L),
+            normalizedPlaybackSpeed(q.optDouble("speed",1.0).toFloat()), q.optInt("repeat").coerceIn(0,2), q.optBoolean("shuffle"))
+    }
+    return LibraryBackup(favorites, playlists, settings, history, queue)
 }

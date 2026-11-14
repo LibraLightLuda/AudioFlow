@@ -44,6 +44,10 @@ internal fun SoundControls(app: AudioFlowApp, close: () -> Unit) {
             .padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("음향 설정", style = MaterialTheme.typography.headlineSmall)
             Text("AudioFlow에서 재생하는 소리에 바로 적용돼요.", style = MaterialTheme.typography.bodyMedium)
+            Text("전체 프리앰프 ${profile.preampDb} dB", style = MaterialTheme.typography.titleMedium)
+            Slider(profile.preampDb.toFloat(), { app.changeSound(profile.copy(preampDb = it.roundToInt()), persist = false) },
+                valueRange = -12f..6f, steps = 17, onValueChangeFinished = app::saveSound,
+                modifier = Modifier.semantics { contentDescription = "전체 프리앰프" })
             Text("프리셋", style = MaterialTheme.typography.titleMedium)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 builtInSoundPresets.forEach { preset ->

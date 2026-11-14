@@ -13,18 +13,20 @@ internal data class SoundProfile(
     val gains: List<Int> = List(soundBands.size) { 0 },
     val space: SoundSpace = SoundSpace.System,
     val strength: Int = 50,
+    val preampDb: Int = 0,
 ) {
-    fun encode() = "1|${if (equalizer) 1 else 0}|${space.name}|$strength|${gains.joinToString(",")}"
+    fun encode() = "2|${if (equalizer) 1 else 0}|${space.name}|$strength|${gains.joinToString(",")}|$preampDb"
 
     companion object {
         fun decode(raw: String?): SoundProfile {
-            val fields = raw?.split('|', limit = 5) ?: return SoundProfile()
-            if (fields.size != 5 || fields[0] != "1" || fields[1] !in setOf("0", "1")) return SoundProfile()
+            val fields = raw?.split('|') ?: return SoundProfile()
+            if (!((fields.size == 5 && fields[0] == "1") || (fields.size == 6 && fields[0] == "2")) || fields[1] !in setOf("0", "1")) return SoundProfile()
             val space = SoundSpace.entries.firstOrNull { it.name == fields[2] } ?: return SoundProfile()
             val strength = fields[3].toIntOrNull()?.takeIf { it in 0..100 } ?: return SoundProfile()
             val gains = fields[4].split(',').mapNotNull { it.toIntOrNull()?.takeIf { gain -> gain in -SOUND_GAIN_LIMIT..SOUND_GAIN_LIMIT } }
             if (gains.size != soundBands.size || fields[4] != gains.joinToString(",")) return SoundProfile()
-            return SoundProfile(fields[1] == "1", gains, space, strength)
+            val preamp = if (fields.size == 6) fields[5].toIntOrNull()?.takeIf { it in -12..6 } ?: return SoundProfile() else 0
+            return SoundProfile(fields[1] == "1", gains, space, strength, preamp)
         }
     }
 }

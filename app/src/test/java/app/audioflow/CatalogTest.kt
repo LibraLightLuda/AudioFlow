@@ -6,6 +6,20 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 class CatalogTest {
+    @Test fun liveFormatRemainsPinnedWhenQualityChangesDuringPlayback() {
+        assumeTrue(System.getenv("AUDIOFLOW_LIVE") == "1")
+        val id = "jNQXAC9IVRw"
+        try {
+            YoutubeCatalog.configure(ListeningOptions())
+            val original = YoutubeCatalog.resolve(id)
+            YoutubeCatalog.configure(ListeningOptions(quality = AudioQuality.Saver))
+            val pinned = YoutubeCatalog.resolve(id, original.formatKey)
+            assertEquals(original.formatKey, pinned.formatKey)
+            PrivateNetwork.stream.newCall(okhttp3.Request.Builder().url(pinned.url).header("Range","bytes=0-1023").build()).execute().use {
+                assertTrue(it.code in listOf(200,206)); assertTrue(checkNotNull(it.body).byteStream().read() >= 0)
+            }
+        } finally { YoutubeCatalog.configure(ListeningOptions()) }
+    }
     @Test fun livePrivateRequestsIgnoreGlobalCookies() {
         assumeTrue(System.getenv("AUDIOFLOW_LIVE") == "1")
         val previous = java.net.CookieHandler.getDefault()

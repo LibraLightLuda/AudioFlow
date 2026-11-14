@@ -12,6 +12,7 @@ import kotlin.math.roundToInt
 
 internal class SoundAudioProcessor : BaseAudioProcessor() {
     @Volatile var profile = SoundProfile()
+    @Volatile var trackGainDb = 0
     private var dsp: SoundDsp? = null
     private var frame = FloatArray(0)
 
@@ -30,7 +31,8 @@ internal class SoundAudioProcessor : BaseAudioProcessor() {
         // Media3 also drains with EMPTY_BUFFER, which replaceOutputBuffer(0) can return unchanged.
         if (!inputBuffer.hasRemaining()) return
         val processor = dsp
-        processor?.configure(profile)
+        val settings = profile
+        processor?.configure(if (trackGainDb == 0) settings else settings.copy(preampDb = (settings.preampDb + trackGainDb).coerceIn(-24, 12)))
         val output = replaceOutputBuffer(inputBuffer.remaining()).order(ByteOrder.nativeOrder())
         if (processor == null || !processor.active) {
             output.put(inputBuffer)

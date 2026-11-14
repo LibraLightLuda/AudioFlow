@@ -54,6 +54,8 @@ internal val SleepTimer = SessionCommand("app.audioflow.TIMER", Bundle.EMPTY)
 internal val RetryPlayback = SessionCommand("app.audioflow.RETRY", Bundle.EMPTY)
 internal val StartRadio = SessionCommand("app.audioflow.RADIO_START", Bundle.EMPTY)
 internal val StopRadio = SessionCommand("app.audioflow.RADIO_STOP", Bundle.EMPTY)
+internal val ClearStreamCache = SessionCommand("app.audioflow.CLEAR_CACHE", Bundle.EMPTY)
+internal val RestoreSavedQueue = SessionCommand("app.audioflow.RESTORE_QUEUE", Bundle.EMPTY)
 private const val CHANNEL_URL = "app.audioflow.channelUrl"
 internal const val STREAM_CACHE_BYTES = 24L * 1024 * 1024
 internal const val STREAM_BUFFER_TARGET_BYTES = 8 * 1024 * 1024
@@ -101,9 +103,22 @@ class PlaybackService : MediaSessionService() {
     private var networkCallbackRegistered = false
     private var savedState: QueueState? = null
     private var queueTracks: List<Track>? = null
+    private var options = ListeningOptions()
+    private val cacheEvictor = BudgetCacheEvictor(STREAM_CACHE_BYTES)
+    private var networkRetries = 0
+    private var recoveryJob: Job? = null
+    private var loopJob: Job? = null
+    private var gainJob: Job? = null
+    private lateinit var soundProcessor: SoundAudioProcessor
+    private var preparingAt = 0L
+    private var blockedIds = emptySet<String>()
+    private var blockedChannels = emptySet<String>()
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-            scope.launch { updatePreload() }
+            scope.launch {
+                updatePreload()
+                if (capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) recoverNetwork()
+            }
         }
 
         override fun onLost(network: Network) {
@@ -115,7 +130,7 @@ class PlaybackService : MediaSessionService() {
         super.onCreate()
         val http = OkHttpDataSource.Factory(PrivateNetwork.stream).setUserAgent(BROWSER_AGENT)
         streamCache = runCatching {
-            SimpleCache(File(cacheDir, "stream-v1"), LeastRecentlyUsedCacheEvictor(STREAM_CACHE_BYTES),
+            SimpleCache(File(cacheDir, "stream-v1"), cacheEvictor,
                 StandaloneDatabaseProvider(this))
         }.onFailure { Log.w("AudioFlow", "Stream cache unavailable") }.getOrNull()
         val upstream = streamCache?.let { cache ->
@@ -135,13 +150,15 @@ class PlaybackService : MediaSessionService() {
                     }
                 }
         } ?: http
-        val source = ResolvingDataSource.Factory(upstream) { spec ->
+        val source = DataSource.Factory {
+            var selectedFormat: String? = null
+            ResolvingDataSource(upstream.createDataSource()) { spec ->
             val id = spec.uri.lastPathSegment.orEmpty()
             if (spec.uri.scheme != "audioflow" || spec.uri.host != "video" || !YoutubeLink.isVideoId(id)) {
                 throw IOException("Invalid media item")
             }
             val stream = try {
-                YoutubeCatalog.resolve(id)
+                YoutubeCatalog.resolve(id, selectedFormat).also { selectedFormat = it.formatKey }
             } catch (error: Exception) {
                 throw IOException("YouTube stream lookup failed", error)
             }
@@ -154,6 +171,7 @@ class PlaybackService : MediaSessionService() {
             )
             spec.buildUpon().setUri(uri).setKey("$id:${stream.formatKey}:$identity")
                 .setFlags(spec.flags or DataSpec.FLAG_ALLOW_CACHE_FRAGMENTATION).build()
+        }
         }
         val media = ProgressiveMediaSource.Factory(source)
             .setContinueLoadingCheckIntervalBytes(64 * 1024)
@@ -171,15 +189,9 @@ class PlaybackService : MediaSessionService() {
                     return if (retryable && info.errorCount in 1..4) 750L shl (info.errorCount - 1) else C.TIME_UNSET
                 }
             })
-        val soundProcessor = SoundAudioProcessor().apply { profile = app.sound.value }
+        soundProcessor = SoundAudioProcessor().apply { profile = app.sound.value }
         var systemSpace = soundProcessor.profile.space == SoundSpace.System
-        val renderers = object : DefaultRenderersFactory(this) {
-            override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioOutputPlaybackParams: Boolean): AudioSink =
-                DefaultAudioSink.Builder(context)
-                    .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParams)
-                    .setAudioProcessors(arrayOf(soundProcessor))
-                    .build()
-        }
+        val renderers = soundRenderers(this, soundProcessor)
         player = ExoPlayer.Builder(this, renderers).setMediaSourceFactory(media)
             .setLoadControl(DefaultLoadControl.Builder()
                 .setTargetBufferBytes(STREAM_BUFFER_TARGET_BYTES)
@@ -227,17 +239,25 @@ class PlaybackService : MediaSessionService() {
             autoplayEnabled = it
             if (!it) autoJob?.cancel()
         } }
+        networkCallbackRegistered = runCatching {
+            getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(networkCallback)
+        }.isSuccess
         scope.launch { app.store.preload.collect { enabled ->
-            if (enabled && !networkCallbackRegistered) {
-                networkCallbackRegistered = runCatching {
-                    getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(networkCallback)
-                }.isSuccess
-            } else if (!enabled) {
-                stopWatchingNetwork()
-            }
-            preloadEnabled = enabled && networkCallbackRegistered
+            preloadEnabled = enabled
             updatePreload()
         } }
+        scope.launch { app.store.listening.collect { value ->
+            val previous = options
+            options = value
+            YoutubeCatalog.configure(value)
+            if (value.cacheMiB != previous.cacheMiB) withContext(Dispatchers.IO) {
+                streamCache?.let { cacheEvictor.resize(it, value.cacheMiB * 1024L * 1024) }
+            }
+            updatePreload()
+        } }
+        scope.launch { app.practice.collect { updateLoop() } }
+        scope.launch { app.store.blockedTracks.collect { blockedIds = it } }
+        scope.launch { app.store.blockedChannels.collect { blockedChannels = it } }
     }
 
     private fun soundAttributes(systemSpace: Boolean) = AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
@@ -248,6 +268,14 @@ class PlaybackService : MediaSessionService() {
     private val listener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             retryUsed = false
+            networkRetries = 0
+            recoveryJob?.cancel()
+            gainJob?.cancel()
+            soundProcessor.trackGainDb = 0
+            mediaItem?.mediaId?.takeIf(YoutubeLink::isVideoId)?.let { id ->
+                gainJob = scope.launch { app.store.trackGain(id).collect { soundProcessor.trackGainDb = it } }
+            }
+            if (app.practice.value.videoId != mediaItem?.mediaId) app.practice.value = PracticeLoop()
             if (app.autoplayTrack.value?.first != mediaItem?.mediaId) app.autoplayTrack.value = null
         }
 
@@ -256,6 +284,13 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playbackState == Player.STATE_BUFFERING && preparingAt == 0L) preparingAt = SystemClock.elapsedRealtime()
+            if (playbackState == Player.STATE_READY) {
+                if (preparingAt > 0) app.playbackHealth.value = "최근 연결 준비 ${SystemClock.elapsedRealtime() - preparingAt} ms"
+                preparingAt = 0
+                networkRetries = 0
+            }
+            if (playbackState == Player.STATE_ENDED && app.sleepAtEnd.value) { finishSleep(); return }
             if (playbackState == Player.STATE_ENDED && manualQueue == null &&
                 app.radio.value.phase != RadioPhase.Finding) startAutoplay()
             else autoJob?.cancel()
@@ -263,6 +298,8 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            app.reportFailure("재생", error)
+            app.playbackHealth.value = playbackDiagnostic(error)
             val id = player.currentMediaItem?.mediaId ?: return
             // Only a CDN response can indicate an expired signed stream.
             if (streamStatus(error) in setOf(403, 410)) {
@@ -274,8 +311,7 @@ class PlaybackService : MediaSessionService() {
                 }
             }
             if (manualQueue != null && player.playWhenReady) {
-                val networkFailed = error.errorCode in setOf(PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
-                    PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT)
+                val networkFailed = recoverableNetworkFailure(error, error.errorCode)
                 if (!radioAccessLimited(error) && !networkFailed && streamStatus(error) != 429 &&
                     ++radioErrors <= 2 && player.hasNextMediaItem()) {
                     player.seekToNextMediaItem()
@@ -284,12 +320,14 @@ class PlaybackService : MediaSessionService() {
                 }
                 radioJob?.cancel()
                 app.radio.value = RadioUi(RadioPhase.Stalled, playbackError(error))
-                player.pause()
+                if (!networkFailed) player.pause()
             }
             snapshot()
+            recoverNetwork()
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            updateLoop()
             updatePreload()
             checkpoints?.cancel()
             checkpoints = null
@@ -302,6 +340,7 @@ class PlaybackService : MediaSessionService() {
                         snapshot()
                         recordCurrent()
                         updatePreload()
+                        app.cacheBytes.value = streamCache?.cacheSpace ?: 0
                     }
                 }
             } else {
@@ -314,6 +353,7 @@ class PlaybackService : MediaSessionService() {
 
         override fun onPositionDiscontinuity(old: Player.PositionInfo, new: Player.PositionInfo, reason: Int) {
             val completed = reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION
+            if (completed && app.sleepAtEnd.value) { finishSleep(); return }
             val changedTrack = old.mediaItem != new.mediaItem
             if (changedTrack || completed) {
                 old.mediaItem?.track()?.takeIf { it.id == lastHistoryId }?.let { record(it, if (completed) 0 else old.positionMs) }
@@ -349,7 +389,7 @@ class PlaybackService : MediaSessionService() {
             val result = MediaSession.ConnectionResult.AcceptedResultBuilder(session)
             if (controller.uid == applicationInfo.uid) {
                 result.setAvailableSessionCommands(MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
-                    .add(StopPlayback).add(SleepTimer).add(RetryPlayback).add(StartRadio).add(StopRadio).build())
+                    .add(StopPlayback).add(SleepTimer).add(RetryPlayback).add(StartRadio).add(StopRadio).add(ClearStreamCache).add(RestoreSavedQueue).build())
             } else {
                 if (!controller.isTrusted && !session.isMediaNotificationController(controller)) {
                     return MediaSession.ConnectionResult.reject()
@@ -398,8 +438,33 @@ class PlaybackService : MediaSessionService() {
                 SessionResult.RESULT_SUCCESS
             }
             command.customAction == SleepTimer.customAction -> {
-                setTimer(args.getInt("minutes").coerceIn(0, 120))
+                setTimer(args.getInt("minutes").coerceIn(0, 120), args.getBoolean("atEnd"))
                 SessionResult.RESULT_SUCCESS
+            }
+            command.customAction == ClearStreamCache.customAction -> {
+                if (player.isPlaying || player.playbackState == Player.STATE_BUFFERING) SessionResult.RESULT_ERROR_INVALID_STATE
+                else {
+                    scope.launch(Dispatchers.IO) {
+                        runCatching { streamCache?.let { cache -> cache.keys.toList().forEach(cache::removeResource) } }
+                            .onFailure { app.playbackHealth.value = "캐시를 비우지 못했어요." }
+                        app.cacheBytes.value = streamCache?.cacheSpace ?: 0
+                    }
+                    SessionResult.RESULT_SUCCESS
+                }
+            }
+            command.customAction == RestoreSavedQueue.customAction -> {
+                if (player.playWhenReady) SessionResult.RESULT_ERROR_INVALID_STATE else {
+                    scope.launch {
+                        val saved = app.store.readQueue()
+                        endRadio(restore = false)
+                        initialized = false
+                        if (saved.tracks.isEmpty()) player.clearMediaItems() else player.setMediaItems(saved.tracks.map { it.mediaItem() }, saved.index.coerceIn(saved.tracks.indices), saved.position)
+                        player.setPlaybackSpeed(saved.speed); player.repeatMode = saved.repeat; player.shuffleModeEnabled = saved.shuffle
+                        initialized = true
+                        snapshot()
+                    }
+                    SessionResult.RESULT_SUCCESS
+                }
             }
             command.customAction == RetryPlayback.customAction -> {
                 if (player.playerError != null && player.currentMediaItem != null) {
@@ -435,7 +500,8 @@ class PlaybackService : MediaSessionService() {
             try {
                 restoreJob?.join()
                 val dao = app.store.dao
-                val mix = RadioMix(dao.favorites().first().take(20).map { it.track }, dao.history().first().take(30).map { it.track })
+                val mix = RadioMix(dao.favorites().first().take(20).map { it.track }, dao.history().first().take(30).map { it.track },
+                    allowed = { it.id !in blockedIds && it.channelUrl.ifBlank { it.channel } !in blockedChannels })
                 val first = selectRadio(mix, emptyList(), starting = true)
                 if (manualQueue == null) {
                     snapshot()
@@ -538,7 +604,7 @@ class PlaybackService : MediaSessionService() {
         val enable = preloadEnabled && player.isPlaying && player.hasNextMediaItem() &&
             player.repeatMode != Player.REPEAT_MODE_ONE && bufferReady &&
             !getSystemService(ConnectivityManager::class.java).isActiveNetworkMetered
-        val configuration = if (enable) NEXT_TRACK_PRELOAD else ExoPlayer.PreloadConfiguration.DEFAULT
+        val configuration = if (enable) ExoPlayer.PreloadConfiguration(options.preloadSeconds * 1_000_000L) else ExoPlayer.PreloadConfiguration.DEFAULT
         if (player.preloadConfiguration != configuration) player.preloadConfiguration = configuration
     }
 
@@ -581,19 +647,64 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    private fun setTimer(minutes: Int) {
+    private fun setTimer(minutes: Int, atEnd: Boolean = false) {
         timerJob?.cancel()
+        player.volume = 1f
+        app.sleepAtEnd.value = atEnd
         val duration = minutes * 60_000L
         app.sleepDeadline.value = if (minutes > 0) SystemClock.elapsedRealtime() + duration else 0L
         timerJob = if (minutes == 0) null else scope.launch {
-            delay(duration)
-            app.sleepDeadline.value = 0L
-            endRadio(restore = true)
-            player.pause()
-            player.stop()
-            lastHistoryId = null
-            snapshot()
-            pauseAllPlayersAndStopSelf()
+            val fade = minOf(duration, options.fadeSeconds * 1000L)
+            delay(duration - fade)
+            val start = SystemClock.elapsedRealtime()
+            while (fade > 0 && SystemClock.elapsedRealtime() - start < fade) {
+                player.volume = (1f - (SystemClock.elapsedRealtime() - start).toFloat() / fade).coerceIn(0f, 1f)
+                delay(100)
+            }
+            finishSleep()
+        }
+    }
+
+    private fun finishSleep() {
+        app.sleepAtEnd.value = false
+        app.sleepDeadline.value = 0L
+        timerJob?.cancel()
+        endRadio(restore = true)
+        player.pause()
+        player.stop()
+        player.volume = 1f
+        lastHistoryId = null
+        snapshot()
+        pauseAllPlayersAndStopSelf()
+    }
+
+    private fun updateLoop() {
+        loopJob?.cancel()
+        val loop = app.practice.value
+        if (loop.b == null || loop.videoId != player.currentMediaItem?.mediaId || !player.isPlaying) return
+        loopJob = scope.launch {
+            while (isActive && player.isPlaying && app.practice.value == loop) {
+                if (loop.contains(player.currentMediaItem?.mediaId.orEmpty(), player.currentPosition)) player.seekTo(loop.a)
+                delay(100)
+            }
+        }
+    }
+
+    private fun recoverNetwork() {
+        val error = player.playerError ?: return
+        if (!options.recoverNetwork || !player.playWhenReady || networkRetries >= 2 || recoveryJob?.isActive == true ||
+            !recoverableNetworkFailure(error, error.errorCode)) return
+        val manager = getSystemService(ConnectivityManager::class.java)
+        if (manager.getNetworkCapabilities(manager.activeNetwork)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) != true) return
+        val id = player.currentMediaItem?.mediaId ?: return
+        networkRetries++
+        recoveryJob = scope.launch {
+            delay(networkRetries * 1500L)
+            if (options.recoverNetwork && player.playWhenReady && player.playerError != null && player.currentMediaItem?.mediaId == id) {
+                YoutubeCatalog.forgetStream(id)
+                if (manualQueue != null) app.radio.value = RadioUi(RadioPhase.On)
+                player.prepare()
+            }
         }
     }
 
@@ -611,7 +722,11 @@ class PlaybackService : MediaSessionService() {
                 if (started) dao.played(track, position)
                 else dao.checkpointPosition(track.id, position.coerceAtLeast(0))
             }
-                .onFailure { Log.w("AudioFlow", "Could not save playback history") }
+                .onFailure {
+                    app.reportFailure("재생 기록 저장", it)
+                    if (started && lastHistoryId == track.id) lastHistoryId = null
+                    Log.w("AudioFlow", "Could not save playback history")
+                }
         }
     }
 
@@ -633,6 +748,7 @@ class PlaybackService : MediaSessionService() {
             runCatching { app.store.saveQueue(state) }
                 .onFailure {
                     if (savedState == state) savedState = null
+                    app.reportFailure("대기열 저장", it)
                     Log.w("AudioFlow", "Could not save playback queue")
                 }
         }

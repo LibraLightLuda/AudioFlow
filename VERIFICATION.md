@@ -1,5 +1,17 @@
 # AudioFlow 검증
 
+## 1.10.0 — 2026-11-16 (KST)
+
+- 곡 메뉴·전체 플레이어의 MP3 저장 기능을 추가했습니다. 쿠키 없는 기존 스트림 클라이언트로 오디오 전용 원본을 받고, Android MediaExtractor/MediaCodec → PCM → Java LAME 3.98.4 → 실제 MP3로 변환합니다. 파일 확장자 변경이나 서버 변환으로 대체하지 않습니다.
+- 기본 CBR 192 kbps, 32 kHz 미만은 128 kbps입니다. 한 번에 한 작업, 공개·길이 확인 가능·3시간 이내·모노/스테레오만 지원합니다. 원본 512MiB·결과 256MiB·전체 30분 상한, 고정 크기 버퍼, 실패·취소 정리, 포그라운드 알림·취소와 선택적 알림 권한을 구현했습니다.
+- Java LAME의 LGPL-3.0 고지·배포 JAR 해시·전체 원본 소스 ZIP을 포함했습니다. 코어 API를 직접 호출하므로 데스크톱 Java Sound에 의존하지 않으며 FFmpeg/JNI를 런타임에 추가하지 않습니다. 사용 조건과 출처는 `third_party/java-lame/README.md`에 기록했습니다.
+- `AUDIOFLOW_LIVE=1` 전체 JVM 49개가 실패·오류·건너뜀 없이 통과했습니다. 실제 익명 YouTube 음원을 끝까지 다운로드해 Content-Range의 전체 크기와 파일 길이가 같은지 검사했습니다. 실제 PCM의 모노·스테레오 MP3 인코딩, 파일명과 범위 검증도 포함합니다.
+- 릴리스 APK·Android 테스트 APK 빌드, Lint(오류 0·경고 10)가 통과했습니다. 새 경고는 공간 부족 오류를 안내하는 `File.usableSpace`에 대한 StorageManager 대안 권고입니다.
+- 첫 Android 검사에서 파일 끝의 `sampleFlags == -1`을 암호화 표시로 오인하는 오류를 발견했습니다. 실제 샘플이 존재할 때만 암호화 플래그를 검사하도록 수정했으며 DRM 확인은 유지했습니다.
+- [최종 Android 검사](https://github.com/LibraLightLuda/AudioFlow/actions/runs/43781969685)는 Android 9·15 각각 14개, 총 28개가 실패·오류·건너뜀 없이 통과했습니다. 48kHz 스테레오 AAC·Opus 합성 음원을 실제 MP3로 변환하고, Android MediaExtractor가 `audio/mpeg`로 인식하며 MediaPlayer가 열어 재생 위치를 진행하는지 확인했습니다. 곡 메뉴에서 저장 안내와 저장 위치 선택 버튼에 접근하는 UI 검사도 통과했습니다. 실제 YouTube 콘텐츠의 다운로드는 PC 검사이며 Android의 YouTube → 파일 선택기 → 저장 전체 흐름으로 확대 해석하지 않습니다.
+- 검사 대상 앱 코드는 `e21a1c4c2b930df287d070527af4e062ee93ac43`입니다. 이후 커밋은 이 검증 문서만 수정했습니다. [같은 코드의 GitHub 기본 검사](https://github.com/LibraLightLuda/AudioFlow/actions/runs/43781969284)도 통과했습니다. 최종 패키지는 `app.audioflow`, 버전 코드 15, 버전 1.10.0이며 기존 서명·16KiB 정렬·공개 다운로드 해시는 릴리스 스크립트가 검사합니다.
+- 실제 휴대전화, 파일 선택기의 모든 문서 제공자, 장시간·화면 잠금 중의 내보내기는 미검증입니다. 프로세스 강제 종료 후 자동 재개는 제공하지 않으며 빈/불완전한 대상 파일이 남을 수 있습니다. 외부 공개 콘텐츠의 저장 권리는 코덱 라이선스와 별개입니다.
+
 ## 1.9.0 — 2026-11-15 (KST)
 
 - [20개 개선사항 반영표](docs/IMPROVEMENTS.md)에 구현 내용·저장 한도·미구현 실험을 구분했습니다. 사용자 요청에 따라 Android 기기 검증은 에뮬레이터로 한정했습니다.

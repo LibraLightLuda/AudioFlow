@@ -35,6 +35,8 @@ class SettingsUiTest {
                         ui.onAllNodes(hasText("마지막 확인 ", substring = true)).fetchSemanticsNodes().isNotEmpty()
                     }
                 } catch(error: Exception) { screenshot("updates-error"); println(ui.onRoot(useUnmergedTree=true).printToString()); throw error }
+                val recent=runBlocking(kotlinx.coroutines.Dispatchers.IO) { ReleaseUpdate.latest(allowRecent=true) }
+                org.junit.Assert.assertSame(recent,runBlocking(kotlinx.coroutines.Dispatchers.IO) { ReleaseUpdate.latest(allowRecent=true) })
                 ui.onNodeWithText("이번 버전의 개선사항").assertExists()
                 screenshot("updates-$it")
                 ui.onNodeWithText("설정으로 돌아가기").performScrollTo().performClick()

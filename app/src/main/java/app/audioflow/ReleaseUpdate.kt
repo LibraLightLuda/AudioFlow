@@ -89,17 +89,19 @@ internal object ReleaseUpdate {
 
     private var cachedLatest: UpdateAsset? = null
     private var cachedAtNanos = 0L
-    @Synchronized
+    private val metadataLock = Any()
     fun latest(allowRecent: Boolean = false): UpdateAsset {
         // Reuse a successful check across activity recreation; the update screen still checks afresh.
-        if(allowRecent && System.nanoTime()-cachedAtNanos in 0..60_000_000_000L) cachedLatest?.let { return it }
+        synchronized(metadataLock) {
+            if(allowRecent && System.nanoTime()-cachedAtNanos in 0..60_000_000_000L) cachedLatest?.let { return it }
+        }
         val request = Request.Builder().url(RELEASE_API).header("Accept", "application/vnd.github+json")
             .header("User-Agent", "AudioFlow-updater").build()
         return metadataClient.newCall(request).execute().use {
             requireSuccess(it)
             val bytes = it.body?.byteStream()?.readLimited(1024 * 1024)
                 ?: throw UpdateException("릴리스 정보를 읽지 못했어요.")
-            parseLatestRelease(bytes.toString(Charsets.UTF_8)).also { cachedLatest=it; cachedAtNanos=System.nanoTime() }
+            parseLatestRelease(bytes.toString(Charsets.UTF_8)).also { value -> synchronized(metadataLock) { cachedLatest=value; cachedAtNanos=System.nanoTime() } }
         }
     }
 

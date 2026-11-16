@@ -78,6 +78,8 @@ abstract class LibraryDao {
     open suspend fun restoreFavorite(row: SavedTrack) { insert(row); markFavorite(row.track.id, row.favoriteAt) }
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     abstract suspend fun insert(row: SavedTrack)
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    abstract suspend fun insert(rows: List<SavedTrack>)
 
     @Query("UPDATE tracks SET title=:title, channel=:channel, thumbnail=:thumbnail, seconds=:seconds, channelUrl=CASE WHEN :channelUrl='' THEN channelUrl ELSE :channelUrl END WHERE id=:id")
     abstract suspend fun refresh(id: String, title: String, channel: String, thumbnail: String, seconds: Long, channelUrl: String)

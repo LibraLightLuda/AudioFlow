@@ -62,7 +62,7 @@ internal fun MusicExportControls(tracks: List<Track>?, dismiss: () -> Unit) {
             if(busy) { showing=true; dismiss() } else {
                 requested=ArrayList(tracks.map { it.id }); requestedName=musicFileName(tracks.first()); batch=tracks.size>1; message=null
                 app.scope.launch {
-                    withContext(Dispatchers.IO) { tracks.distinctBy { it.id }.forEach { app.store.dao.insert(SavedTrack(it)) } }
+                    withContext(Dispatchers.IO) { app.store.dao.insert(tracks.distinctBy { it.id }.map { SavedTrack(it) }) }
                     dismiss()
                     if(android.os.Build.VERSION.SDK_INT>=33 && androidx.core.content.ContextCompat.checkSelfPermission(context,android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED)
                         permission.launch(android.Manifest.permission.POST_NOTIFICATIONS)

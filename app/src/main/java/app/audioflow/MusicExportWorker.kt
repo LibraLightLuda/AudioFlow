@@ -29,7 +29,7 @@ internal object ExportJobs {
         require(document.isBlank() || tracks.size==1)
         require(tracks.all { YoutubeLink.isVideoId(it.id) })
         val app=context.applicationContext as AudioFlowApp
-        tracks.distinctBy { it.id }.forEach { app.store.dao.insert(SavedTrack(it)) }
+        app.store.dao.insert(tracks.distinctBy { it.id }.map { SavedTrack(it) })
         val batch=UUID.randomUUID().toString()
         val requests=tracks.chunked(100).mapIndexed { chunk, part ->
             OneTimeWorkRequestBuilder<MusicExportWorker>().setInputData(workDataOf(

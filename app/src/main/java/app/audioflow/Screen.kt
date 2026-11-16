@@ -133,7 +133,8 @@ internal fun AudioFlowScreen(
     var importing by remember { mutableStateOf(false) }
     var excludeTrack by remember { mutableStateOf<Track?>(null) }
     var cleanup by remember { mutableStateOf<Pair<Long?, List<Track>>?>(null) }
-    var exportTrack by remember { mutableStateOf<Track?>(null) }
+    var exportTracks by remember { mutableStateOf<List<Track>?>(null) }
+    var settingsStart by rememberSaveable { mutableStateOf("설정") }
 
     LaunchedEffect(installedNotes) {
         val release = installedNotes ?: return@LaunchedEffect
@@ -269,12 +270,14 @@ internal fun AudioFlowScreen(
         { playlistPicker = it },
         ::openYouTube,
         { excludeTrack = it },
-        { exportTrack = it },
+        { exportTracks = listOf(it) },
+        { exportTracks = it },
     )
 
     val colors = remember(colorTheme, dark) { audioFlowColors(colorTheme, dark) }
     MaterialTheme(colorScheme = colors) {
-        MusicExportControls(exportTrack) { exportTrack = null }
+        MusicExportControls(exportTracks) { exportTracks = null }
+        StartupUpdateNotice(snackbar,!releaseNotesOpen) { settingsStart="앱 업데이트"; page=Page.Settings; playerOpen=false }
         Scaffold(
             containerColor = MaterialTheme.colorScheme.surface,
             snackbarHost = { SnackbarHost(snackbar) },
@@ -334,7 +337,7 @@ internal fun AudioFlowScreen(
                     { update { store.setColorTheme(it) } },
                     { clearHistory = true }, controller, playback, deadline, store, radio.phase != RadioPhase.Off,
                     { soundOpen = true },
-                    if (installedNotes != null) ({ releaseNotesOpen = true }) else null)
+                    if (installedNotes != null) ({ releaseNotesOpen = true }) else null, settingsStart)
             }
         }
 
@@ -478,6 +481,7 @@ private data class TrackActions(
     val openChannel: (Track) -> Unit,
     val exclude: (Track) -> Unit,
     val export: (Track) -> Unit,
+    val exportAll: (List<Track>) -> Unit,
 )
 
 @Composable
@@ -788,6 +792,19 @@ private fun LibraryScreen(
     LazyColumn(modifier, contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp)) {
         item {
             Headline("MY COLLECTION", "라이브러리", "이 기기에 저장된 트랙과 목록")
+            if(active!=null || shelf!=Shelf.Playlists) {
+                var listMenu by remember { mutableStateOf(false) }
+                Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
+                    Text("목록 관리",Modifier.weight(1f))
+                    Box {
+                        IconButton(onClick={listMenu=true}) { Icon(Icons.Default.MoreVert,"음악 목록 더보기") }
+                        DropdownMenu(listMenu,{listMenu=false}) {
+                            val all=if(active!=null) entries else if(shelf==Shelf.Favorite) favorites else history
+                            DropdownMenuItem(text={Text("목록 모두 MP3로 저장")},enabled=all.isNotEmpty(),onClick={listMenu=false;actions.exportAll(all)})
+                        }
+                    }
+                }
+            }
             if (active == null) {
                 OutlinedTextField(query, { query = it.take(100) }, Modifier.fillMaxWidth(),
                     label = { Text("라이브러리 전체 검색 · 제목/채널/목록") }, singleLine = true)
@@ -929,6 +946,7 @@ private fun PlayerScreen(
                     IconButton(onClick = { more = true }) { Icon(Icons.Default.MoreVert, "플레이어 더보기") }
                     DropdownMenu(more, { more = false }) {
                         DropdownMenuItem(text = { Text("음향 설정") }, onClick = { more = false; openSound() })
+                        DropdownMenuItem(text={Text("대기열 모두 MP3로 저장")},enabled=state.queue.isNotEmpty(),onClick={more=false;actions.exportAll(state.queue)})
                         if (current != null) {
                             DropdownMenuItem(text = { Text("MP3 파일로 저장") }, onClick = { more = false; actions.export(current) })
                             val app = context.applicationContext as AudioFlowApp
@@ -1175,11 +1193,12 @@ private fun SettingsScreen(
     setColorTheme: (AppColorTheme) -> Unit, clearHistory: () -> Unit,
     controller: MediaController?, playback: PlaybackUi, deadline: Long, store: LocalStore, radioActive: Boolean,
     openSound: () -> Unit, openInstalledNotes: (() -> Unit)?,
+    initialSection: String = "설정",
 ) {
     val autoplay by store.autoplay.collectAsStateWithLifecycle(false)
     val preload by store.preload.collectAsStateWithLifecycle(false)
     val scope = rememberCoroutineScope()
-    var section by rememberSaveable { mutableStateOf("설정") }
+    var section by rememberSaveable(initialSection) { mutableStateOf(initialSection) }
     BackHandler(section != "설정") { section = "설정" }
     key(section) { Column(modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()).padding(horizontal = 18.dp, vertical = 8.dp)) {
         run {
@@ -1191,6 +1210,7 @@ private fun SettingsScreen(
             run { SettingsRow("음향 설정", "이퀄라이저 · 공간 음향 · 프리셋", openSound) }
             run { SettingsRow("화면과 색 테마", "${colorTheme.title} · ${if (dark) "다크 모드" else "라이트 모드"}") { section = "화면과 색 테마" } }
             run { SettingsRow("기기 저장", "라이브러리 백업 · 복원 · 재생 기록") { section = "기기 저장" } }
+            run { SettingsRow("음악 파일 저장", "완청 자동 저장 · 저장 결과 · 파일 중복 정리") { section="음악 파일 저장" } }
             run { SettingsRow("앱 업데이트", "최신 버전과 개선사항 확인") { section = "앱 업데이트" } }
         }
         if (section == "재생") run {
@@ -1229,6 +1249,7 @@ private fun SettingsScreen(
                 modifier = Modifier.clickable(onClick = clearHistory))
         }
         if (section == "앱 업데이트") run { UpdateControls(openInstalledNotes) }
+        if (section == "음악 파일 저장") run { MusicStorageSettings() }
     } }
 }
 

@@ -108,6 +108,13 @@ class PlaybackService : MediaSessionService() {
     private var networkRetries = 0
     private var recoveryJob: Job? = null
     private var loopJob: Job? = null
+    private val fullListen=FullListen()
+    private fun sampleListening() {
+        player.currentMediaItem?.mediaId?.let { fullListen.sample(it,player.currentPosition,SystemClock.elapsedRealtime(),player.isPlaying,player.playbackParameters.speed) }
+    }
+    private fun completeListening(track: Track?, position: Long, duration: Long) {
+        if(track!=null && fullListen.finish(track.id,position,duration,SystemClock.elapsedRealtime())) ExportJobs.automatic(app,track)
+    }
     private var gainJob: Job? = null
     private lateinit var soundProcessor: SoundAudioProcessor
     private var preparingAt = 0L
@@ -129,6 +136,7 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+        ExportJobs.resetAutomaticSession()
         val http = OkHttpDataSource.Factory(PrivateNetwork.stream).setUserAgent(BROWSER_AGENT)
         streamCache = runCatching {
             SimpleCache(File(cacheDir, "stream-v1"), cacheEvictor,
@@ -285,6 +293,7 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
+            if(playbackState==Player.STATE_ENDED) completeListening(player.currentMediaItem?.track(),player.currentPosition,player.duration)
             if (playbackState == Player.STATE_BUFFERING && preparingAt == 0L) preparingAt = SystemClock.elapsedRealtime()
             if (playbackState == Player.STATE_READY) {
                 if (preparingAt > 0) app.playbackHealth.value = "최근 연결 준비 ${SystemClock.elapsedRealtime() - preparingAt} ms"
@@ -328,6 +337,7 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            sampleListening()
             updateLoop()
             updatePreload()
             checkpoints?.cancel()
@@ -336,8 +346,11 @@ class PlaybackService : MediaSessionService() {
                 radioErrors = 0
                 recordCurrent()
                 checkpoints = scope.launch {
+                    var ticks=0
                     while (isActive) {
-                        delay(5_000)
+                        delay(1_000)
+                        sampleListening()
+                        if(++ticks % 5 != 0) continue
                         snapshot()
                         recordCurrent()
                         updatePreload()
@@ -354,6 +367,8 @@ class PlaybackService : MediaSessionService() {
 
         override fun onPositionDiscontinuity(old: Player.PositionInfo, new: Player.PositionInfo, reason: Int) {
             val completed = reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION
+            if(completed) completeListening(old.mediaItem?.track(),old.positionMs,(old.mediaItem?.track()?.seconds?:0)*1000)
+            else fullListen.invalidate()
             if (completed && app.sleepAtEnd.value) { finishSleep(); return }
             val changedTrack = old.mediaItem != new.mediaItem
             if (changedTrack || completed) {
@@ -366,6 +381,7 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onEvents(player: Player, events: Player.Events) {
+            sampleListening()
             if (events.contains(Player.EVENT_PLAY_WHEN_READY_CHANGED) && !player.playWhenReady) {
                 autoJob?.cancel()
                 if (manualQueue != null && app.radio.value.phase != RadioPhase.Finding) radioJob?.cancel()

@@ -1,4 +1,4 @@
-# AudioFlow 1.10.0
+# AudioFlow 1.11.0
 
 업데이트 자동 확인, 다섯 가지 색 테마, 항목별 설정 화면을 제공합니다. 음향 처리기가 Media3의 빈 입력 버퍼를 자기 자신에게 복사해 재생을 중단시키던 오류도 수정했습니다. 연결된 실제 휴대전화에서의 YouTube 재생·잠금 화면·블루투스 동작은 별도 검증이 필요합니다.
 
@@ -6,7 +6,7 @@ AudioFlow는 Google 계정 없이 공개 YouTube 콘텐츠의 오디오를 듣�
 
 ## 설치와 사용
 
-1. [GitHub 릴리스의 개인 설치용 APK](https://github.com/LibraLightLuda/AudioFlow/releases/download/v1.10.0/AudioFlow-1.10.0.apk)를 받아 휴대전화에서 엽니다. 기존 버전이 설치돼 있으면 업데이트합니다. USB 디버깅을 사용한다면 APK를 내려받은 폴더에서 `adb install -r AudioFlow-1.10.0.apk`를 실행하세요.
+1. [GitHub 릴리스의 개인 설치용 APK](https://github.com/LibraLightLuda/AudioFlow/releases/download/v1.11.0/AudioFlow-1.11.0.apk)를 받아 휴대전화에서 엽니다. 기존 버전이 설치돼 있으면 업데이트합니다. USB 디버깅을 사용한다면 APK를 내려받은 폴더에서 `adb install -r AudioFlow-1.11.0.apk`를 실행하세요.
 2. 홈의 **노래** 검색은 YouTube Music과 일반 동영상 검색 결과를 합쳐 관련 공식 뮤직비디오·음원을 먼저 표시합니다. **전체**와 **채널** 필터도 사용할 수 있습니다. YouTube에서 영상의 **공유 → AudioFlow**를 선택하면 해당 영상이 바로 재생됩니다.
 3. 채널을 열면 공개 동영상·뮤직비디오, 플레이리스트, Shorts 중 채널이 제공하는 목록을 볼 수 있습니다. 목록 끝의 **더 보기**로 다음 항목을 불러오고, 공개 플레이리스트를 열어 **내 플레이리스트로 저장**하면 로컬 복사본이 생깁니다.
 4. 검색 결과에서 골라 재생하거나 공유로 바로 재생한 곡은 라이브러리의 **기본 플레이리스트**에 자동 추가됩니다. 곡 옵션의 **YouTube에서 채널 열기**는 YouTube 앱을 우선 사용하고, 설치되지 않았다면 브라우저에서 엽니다.
@@ -21,6 +21,16 @@ AudioFlow는 Google 계정 없이 공개 YouTube 콘텐츠의 오디오를 듣�
 
 
 ## MP3 음악 파일 저장
+
+1.11.0부터 즐겨찾기·기록·플레이리스트의 **음악 목록 더보기 → 목록 모두 MP3로 저장**, 플레이어의 **대기열 모두 MP3로 저장**으로 한 번에 최대 5,000곡을 폴더에 순차 저장합니다. 검색어로 필터링한 화면에서도 목록 전체를 대상으로 합니다. 저장된 ID의 파일이 실제로 존재하거나, 선택한 폴더에 같은 ID 표식·기존 파일명이 있으면 변환 전에 건너뜁니다. 결과에 제목과 중복 파일명을 표시하며, 파일명 충돌을 동일한 녹음이라는 증거로 사용하지 않습니다. 새 일괄 파일명에는 `[YouTube ID]`를 넣습니다.
+
+**설정 → 음악 파일 저장**에서 저장 폴더를 지정하고 **완청한 곡 자동 저장**을 켤 수 있습니다(기본 꺼짐). 처음부터 끝까지 실제 진행된 곡만 대상이며, 일시정지는 허용하고 탐색·건너뛰기·중간 위치 복원은 제외합니다. 폴더 권한과 자동 저장 설정은 이 기기에만 적용하므로 백업에 포함하지 않습니다. 폴더를 바꾸면 자동 저장을 다시 켜야 합니다. 모바일 데이터·CPU·배터리·저장 공간을 사용합니다.
+
+같은 설정의 **저장 파일 중복 정리**는 선택 폴더의 완료된 MP3만 대상으로 파일 크기와 SHA-256이 같은 파일을 찾습니다. 보관할 파일 하나를 선택하고 삭제를 확인한 후, 삭제 직전 내용을 다시 비교합니다. 다른 음질·태그·버전의 파일을 같은 노래로 추측해 삭제하지 않습니다. 삭제된 파일에 연결된 저장 기록은 보관 파일로 옮깁니다. 기존 라이브러리의 제목 기반 중복 후보 정리와 별도입니다.
+
+저장은 Android WorkManager 2.11.2의 영속 순차 대기열을 사용합니다. 100곡 단위로 연결하고 취소는 남은 대기열에도 적용합니다. 곡별 30분·작업 단위 45분·원본 512MiB·결과 256MiB를 제한하며, 중단된 목록은 결과를 확인한 뒤 다시 요청할 수 있습니다. 403/429는 30분 쉬고, 네트워크 오류는 해당 목록의 남은 요청을 중단합니다. 결과는 곡별로 최근 10개 목록까지 보관합니다. Android의 백그라운드·배터리·작업 할당량 때문에 자동 저장이 지연될 수 있으며 즉시 완료를 보장하지 않습니다. [공식 WorkManager 설명](https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/long-running)
+
+앱 시작 시 최신 정식 릴리스를 확인하고 현재보다 새 버전이면 버전마다 **한 번만 앱 내 알림**을 표시합니다. 같은 버전으로 재실행·회전해도 다시 표시하지 않으며, 더 높은 새 버전에서는 다시 한 번 표시합니다. 알림의 **업데이트**로 앱 업데이트 화면을 엽니다. 앱 데이터 삭제·재설치로 알림 기록을 지우면 다시 표시될 수 있습니다.
 
 곡의 더보기 또는 전체 플레이어 더보기 → **MP3 파일로 저장** → **저장 위치 선택**에서 기기의 Music/Downloads 등 원하는 폴더를 선택합니다. Android 13 이상에서 알림 권한은 진행·취소 알림을 위한 선택 사항이며, 거절해도 앱 안에서 저장할 수 있습니다. 다른 앱 사용·화면 잠금 중에도 포그라운드 작업으로 계속합니다. 곡 메뉴에서 **진행 상황 보기**를 선택하면 진행창을 다시 열 수 있습니다.
 
@@ -112,6 +122,7 @@ $env:AUDIOFLOW_LIVE = '1'
 
 | 라이브러리 | AudioFlow에서 사용하는 부분 | 공식 소스 |
 | --- | --- | --- |
+| AndroidX WorkManager 2.11.2 (Apache-2.0) | 일괄·완청 자동 MP3 저장의 영속 작업, 순차 실행, 포그라운드 알림과 취소 | [공식 릴리스](https://developer.android.com/jetpack/androidx/releases/work), [AndroidX 소스](https://cs.android.com/androidx/platform/frameworks/support/+/androidx-main:work/) |
 | Java LAME 3.98.4 (LGPL-3.0) | Android에서 디코딩한 PCM의 MP3 인코딩. 데스크톱 Java Sound 래퍼는 호출하지 않으며 배포 JAR·전체 원본 소스·라이선스를 포함합니다. | [nwaldispuehl/java-lame v3.98.4](https://github.com/nwaldispuehl/java-lame/releases/tag/v3.98.4), [출처·해시](third_party/java-lame) |
 | NewPipeExtractor v0.27.0 | 검색, 영상·채널·플레이리스트 조회, 공개 스트림과 자막 정보 추출. `com.github.TeamNewPipe:NewPipeExtractor:v0.27.0`을 [JitPack](https://jitpack.io)에서 받습니다. | [TeamNewPipe/NewPipeExtractor v0.27.0](https://github.com/TeamNewPipe/NewPipeExtractor/releases/tag/v0.27.0) |
 | AndroidX Media3 1.9.2 | ExoPlayer 재생, MediaSessionService, 미디어 캐시, OkHttp 데이터 소스. 직접 의존성은 `media3-exoplayer`, `media3-session`, `media3-datasource-okhttp`입니다. | [androidx/media 1.9.2](https://github.com/androidx/media/releases/tag/1.9.2) |

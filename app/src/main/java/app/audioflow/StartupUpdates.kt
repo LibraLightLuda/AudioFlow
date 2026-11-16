@@ -31,7 +31,7 @@ internal fun StartupUpdateNotice(snackbar: SnackbarHostState, enabled: Boolean, 
         release=withContext(Dispatchers.IO) {
             runCatching {
                 val installed=context.packageManager.getPackageInfo(context.packageName,0).versionName?.let(ReleaseVersion::parse)
-                ReleaseUpdate.latest().takeIf { installed!=null && it.version>installed }
+                ReleaseUpdate.latest(allowRecent=true).takeIf { installed!=null && it.version>installed }
             }.getOrNull()
         }
     }

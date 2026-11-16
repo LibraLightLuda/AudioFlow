@@ -30,9 +30,11 @@ class SettingsUiTest {
             ui.onNodeWithText("설정으로 돌아가기").performScrollTo().performClick()
             repeat(2) {
                 ui.onNodeWithText("앱 업데이트").performClick()
-                ui.waitUntil(30_000) {
-                    ui.onAllNodes(hasText("마지막 확인 ", substring = true)).fetchSemanticsNodes().isNotEmpty()
-                }
+                try {
+                    ui.waitUntil(30_000) {
+                        ui.onAllNodes(hasText("마지막 확인 ", substring = true)).fetchSemanticsNodes().isNotEmpty()
+                    }
+                } catch(error: Exception) { screenshot("updates-error"); println(ui.onRoot(useUnmergedTree=true).printToString()); throw error }
                 ui.onNodeWithText("이번 버전의 개선사항").assertExists()
                 screenshot("updates-$it")
                 ui.onNodeWithText("설정으로 돌아가기").performScrollTo().performClick()

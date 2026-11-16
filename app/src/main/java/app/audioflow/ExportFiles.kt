@@ -21,6 +21,9 @@ internal class ExportFiles(private val context: Context) {
     var automatic: Boolean
         get()=prefs.getBoolean("auto",false)
         set(value) { prefs.edit().putBoolean("auto",value).apply() }
+    var autoWifiOnly: Boolean
+        get()=prefs.getBoolean("auto_wifi_only",true)
+        set(value) { prefs.edit().putBoolean("auto_wifi_only",value).apply() }
     fun blocked(batch: String): String? = if(prefs.getLong("cooldown",0)>System.currentTimeMillis()) "요청 제한으로 잠시 중단했어요. 30분 뒤 다시 시도해 주세요." else prefs.getString("blocked_$batch",null)
     fun block(batch: String, reason: String, limited: Boolean=false) { prefs.edit().putString("blocked_$batch",reason).apply { if(limited) putLong("cooldown",System.currentTimeMillis()+30*60_000) }.apply() }
     private val index=context.getSharedPreferences("music-export-index",Context.MODE_PRIVATE)

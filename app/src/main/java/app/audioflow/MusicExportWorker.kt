@@ -22,7 +22,7 @@ internal object MusicExport { val status=MutableStateFlow(ExportStatus()) }
 
 internal object ExportJobs {
     const val NAME="music-export"
-    suspend fun enqueue(context: Context, tracks: List<Track>, tree: String="", document: String="") = withContext(Dispatchers.IO) {
+    suspend fun enqueue(context: Context, tracks: List<Track>, tree: String="", document: String="", automatic: Boolean=false) = withContext(Dispatchers.IO) {
         require(tracks.isNotEmpty() && tracks.size<=5000 && tree.length<=2000 && document.length<=2000)
         require((tree.isNotBlank()) xor (document.isNotBlank()))
         require((tree.ifBlank { document }).startsWith("content://"))
@@ -31,12 +31,14 @@ internal object ExportJobs {
         val app=context.applicationContext as AudioFlowApp
         app.store.dao.insert(tracks.distinctBy { it.id }.map { SavedTrack(it) })
         val batch=UUID.randomUUID().toString()
+        val wifiOnly=automatic && ExportFiles(context).autoWifiOnly
         val requests=tracks.chunked(100).mapIndexed { chunk, part ->
             OneTimeWorkRequestBuilder<MusicExportWorker>().setInputData(workDataOf(
-                "ids" to part.map { it.id }.toTypedArray(),"batch" to batch,"offset" to chunk*100,"tree" to tree,"document" to document))
+                "ids" to part.map { it.id }.toTypedArray(),"batch" to batch,"offset" to chunk*100,"tree" to tree,"document" to document,"automatic" to automatic,"wifi_only" to wifiOnly))
+                .setConstraints(exportConstraints(automatic,wifiOnly))
                 .addTag(NAME).build()
         }
-        MusicExport.status.value=ExportStatus(true,"저장 대기열에 ${tracks.size}곡을 추가했어요.")
+        MusicExport.status.value=ExportStatus(true,if(wifiOnly && exportWifi(context)==null) "Wi-Fi 연결 후 자동 저장을 시작해요." else "저장 대기열에 ${tracks.size}곡을 추가했어요.")
         WorkManager.getInstance(context).beginUniqueWork(NAME,ExistingWorkPolicy.APPEND_OR_REPLACE,requests.take(1))
             .let { first -> requests.drop(1).fold(first) { chain, request -> chain.then(request) } }.enqueue().result.get()
     }
@@ -47,7 +49,7 @@ internal object ExportJobs {
             try {
                 withContext(Dispatchers.IO) {
                     val files=ExportFiles(app)
-                    if(files.folder.isNotBlank() && files.existing(track.id)==null) enqueue(app,listOf(track),tree=files.folder)
+                    if(files.folder.isNotBlank() && files.existing(track.id)==null) enqueue(app,listOf(track),tree=files.folder,automatic=true)
                 }
             } catch(error: Exception) { if(error is CancellationException) throw error; app.reportFailure("자동 MP3 저장",error) }
             // Avoid re-enqueuing a failed/repeated track until the next player session.
@@ -76,6 +78,14 @@ internal class MusicExportWorker(context: Context, params: WorkerParameters) : C
             manager.notify(904,notification(label,percent))
     }
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        val wifiOnly=inputData.getBoolean("automatic",false) && inputData.getBoolean("wifi_only",true)
+        val wifi=if(wifiOnly) exportWifi(context) ?: run {
+            MusicExport.status.value=ExportStatus(true,"Wi-Fi 연결을 기다리고 있어요.")
+            return@withContext Result.retry()
+        } else null
+        withContext(PrivateNetwork.exportClients.asContextElement(wifi?.let(PrivateNetwork::wifiClients))) { export(wifi) }
+    }
+    private suspend fun export(wifi: android.net.Network?): Result = withContext(Dispatchers.IO) {
         val ids=inputData.getStringArray("ids").orEmpty()
         val batch=inputData.getString("batch").orEmpty()
         val offset=inputData.getInt("offset",0)
@@ -88,6 +98,7 @@ internal class MusicExportWorker(context: Context, params: WorkerParameters) : C
         val source=File(dir,"source.media"); val mp3=File(dir,"encoded.mp3")
         var target: Uri?=null
         var committed=false
+        var waitingForWifi=false
         try {
             manager.createNotificationChannel(NotificationChannel("music-export","음악 파일 저장",NotificationManager.IMPORTANCE_LOW))
             setForeground(ForegroundInfo(904,notification("저장을 준비하고 있어요."),ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC))
@@ -133,6 +144,7 @@ internal class MusicExportWorker(context: Context, params: WorkerParameters) : C
                         files.block(batch,"제한 시간 초과로 남은 저장을 중단했어요.")
                     } catch(cancelled: CancellationException) { throw cancelled
                     } catch(error: Exception) {
+                        if(wifi!=null && !exportWifiAvailable(context,wifi)) throw AwaitExportWifi()
                         val message=if(error is CatalogException || error is CatalogHttpException) catalogError(error) else "연결·저장 공간·파일 권한을 확인해 주세요."
                         rows+=ExportRow(offset+index,saved.title,"실패: $message")
                         if(radioAccessLimited(error)) files.block(batch,message,true)
@@ -147,10 +159,22 @@ internal class MusicExportWorker(context: Context, params: WorkerParameters) : C
                 }
             }
             Result.success()
+        } catch(_: AwaitExportWifi) {
+            waitingForWifi=true
+            Result.retry()
         } catch(timeout: TimeoutCancellationException) {
             files.block(batch,"작업 제한 시간에 도달했어요. 남은 곡은 다시 저장해 주세요.")
             Result.success()
-        } catch(cancelled: CancellationException) { throw cancelled
+        } catch(cancelled: CancellationException) {
+            if(wifi!=null) {
+                val unavailable=!exportWifiAvailable(context,wifi)
+                waitingForWifi=if(android.os.Build.VERSION.SDK_INT>=31)
+                    stopReason!=WorkInfo.STOP_REASON_CANCELLED_BY_APP && (stopReason==WorkInfo.STOP_REASON_CONSTRAINT_CONNECTIVITY || unavailable)
+                else unavailable && withContext(NonCancellable) {
+                    WorkManager.getInstance(context).getWorkInfoById(id).get()?.state!=WorkInfo.State.CANCELLED
+                }
+            }
+            throw cancelled
         } catch(error: Exception) {
             files.block(batch,"저장 작업을 진행하지 못했어요. 폴더 권한과 연결을 확인해 주세요.")
             Result.success()
@@ -159,14 +183,20 @@ internal class MusicExportWorker(context: Context, params: WorkerParameters) : C
                 source.delete(); mp3.delete(); dir.delete()
                 if(!committed) target?.let { runCatching { Docs.deleteDocument(context.contentResolver,it) } }
                 if(document.isNotBlank() && rows.none { it.result=="저장 완료" }) runCatching { Docs.deleteDocument(context.contentResolver,Uri.parse(document)) }
+                if(waitingForWifi) {
+                    MusicExport.status.value=ExportStatus(true,"Wi-Fi 연결을 기다리고 있어요. 다시 연결되면 재시도해요.")
+                } else {
                 val finished=rows.mapTo(hashSetOf()) { it.index }
                 ids.forEachIndexed { index, video -> if(offset+index !in finished) rows+=ExportRow(offset+index,video,"중단: 완료하지 못했어요.") }
                 val report=runCatching { files.report(batch,rows) }.getOrDefault(rows)
                 MusicExport.status.value=ExportStatus(message="저장 ${report.count { it.result=="저장 완료" }} · 중복 ${report.count { it.result.startsWith("중복") }} · 실패/중단 ${report.count { it.result.startsWith("실패") || it.result.startsWith("중단") }}")
+                }
             }
         }
     }
 }
+
+private class AwaitExportWifi : CancellationException()
 
 private class ExportOutput(output: OutputStream) : FilterOutputStream(output) {
     private var bytes=0L

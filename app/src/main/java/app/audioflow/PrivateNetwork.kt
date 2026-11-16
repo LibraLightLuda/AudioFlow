@@ -30,9 +30,20 @@ internal object PrivateNetwork {
         .readTimeout(12, TimeUnit.SECONDS)
         .build()
 
-    val catalog = client(NetworkPurpose.Catalog)
-    val stream = client(NetworkPurpose.Stream)
+    private val catalogClient = client(NetworkPurpose.Catalog)
+    private val streamClient = client(NetworkPurpose.Stream)
+    internal val exportClients = ThreadLocal<Pair<OkHttpClient,OkHttpClient>?>()
+    val catalog get() = exportClients.get()?.first ?: catalogClient
+    val stream get() = exportClients.get()?.second ?: streamClient
     val images = client(NetworkPurpose.Image)
+
+    internal fun wifiClients(network: android.net.Network): Pair<OkHttpClient,OkHttpClient> {
+        fun bind(client: OkHttpClient) = client.newBuilder().socketFactory(network.socketFactory)
+            .dns(object : okhttp3.Dns {
+                override fun lookup(hostname: String) = network.getAllByName(hostname).toList()
+            }).build()
+        return bind(catalogClient) to bind(streamClient)
+    }
 
     private fun client(purpose: NetworkPurpose) = base.newBuilder()
         .addInterceptor(PrivateRequests(purpose)).build()

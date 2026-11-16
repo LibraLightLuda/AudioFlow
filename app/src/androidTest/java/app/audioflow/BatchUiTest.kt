@@ -15,14 +15,20 @@ class BatchUiTest {
         val app=ui.activity.application as AudioFlowApp
         val files=ExportFiles(app)
         val previousFolder=files.folder; val previousAuto=files.automatic
+        val previousWifi=files.autoWifiOnly
         val tracks=listOf(Track("batchUI0001","Batch first"),Track("batchUI0002","Batch second"))
         val previous=tracks.associate { it.id to app.store.dao.track(it.id) }
         try {
             files.folder=DocumentsContract.buildTreeDocumentUri("${app.packageName}.test-documents","root").toString()
             files.automatic=false
+            files.autoWifiOnly=true
             tracks.forEach { app.store.dao.restoreFavorite(SavedTrack(it,favoriteAt=2)) }
             ui.onNodeWithText("설정").performClick()
             ui.onNodeWithText("음악 파일 저장").performScrollTo().performClick()
+            ui.onNodeWithContentDescription("Wi-Fi에서만 자동 다운로드").performScrollTo().assertIsOn().performClick()
+            ui.waitUntil(5000) { !files.autoWifiOnly }
+            ui.onNodeWithContentDescription("Wi-Fi에서만 자동 다운로드").performClick()
+            ui.waitUntil(5000) { files.autoWifiOnly }
             ui.onNodeWithContentDescription("완청한 곡 자동 저장").assertIsEnabled().performClick()
             ui.waitUntil(5000) { files.automatic }
             ui.onNodeWithContentDescription("완청한 곡 자동 저장").performClick()
@@ -36,6 +42,7 @@ class BatchUiTest {
             ui.onNodeWithText("닫기").performClick()
         } finally {
             files.folder=previousFolder; files.automatic=previousAuto
+            files.autoWifiOnly=previousWifi
             tracks.forEach { app.store.dao.restoreFavorite(SavedTrack(it,favoriteAt=previous[it.id]?.favoriteAt?:0)) }
         }
     }

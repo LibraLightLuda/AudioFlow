@@ -25,6 +25,7 @@ internal fun MusicStorageSettings() {
     val scope=rememberCoroutineScope()
     var folder by remember { mutableStateOf(files.folder) }
     var automatic by remember { mutableStateOf(files.automatic) }
+    var wifiOnly by remember { mutableStateOf(files.autoWifiOnly) }
     var report by remember { mutableStateOf(false) }
     var groups by remember { mutableStateOf<List<List<MusicFile>>?>(null) }
     var keep by remember { mutableStateOf(mapOf<Int,Int>()) }
@@ -44,6 +45,8 @@ internal fun MusicStorageSettings() {
     SettingsRow("음악 저장 폴더",if(folder.isBlank()) "일괄·자동 저장에 사용할 폴더 선택" else "설정됨 · 누르면 변경") { picker.launch(folder.takeIf { it.isNotBlank() }?.let(Uri::parse)) }
     ListItem(headlineContent={ Text("완청한 곡 자동 저장") },supportingContent={ Text("처음부터 끝까지 실제 재생한 곡만 저장해요. 탐색·건너뛰기·중간 위치 복원은 제외해요. 모바일 데이터와 배터리를 사용할 수 있어요.") },
         trailingContent={ Switch(automatic,{ files.automatic=it; automatic=it },enabled=folder.isNotBlank(),modifier=Modifier.semantics{contentDescription="완청한 곡 자동 저장"}) })
+    ListItem(headlineContent={Text("Wi-Fi에서만 자동 다운로드")},supportingContent={Text("기본 켜짐 · 끄면 모바일 데이터도 사용해요. 변경한 옵션은 새로 추가되는 자동 저장부터 적용해요.")},
+        trailingContent={Switch(wifiOnly,{files.autoWifiOnly=it;wifiOnly=it},modifier=Modifier.semantics{contentDescription="Wi-Fi에서만 자동 다운로드"})})
     SettingsRow("음악 저장 진행·결과","저장 완료 · 중복 파일 · 실패/중단 목록") { report=true }
     SettingsRow("저장 파일 중복 정리","선택한 폴더에서 파일 내용이 완전히 같은 MP3만 검사") {
         if(busy) message="저장이 끝난 뒤 중복 정리를 실행해 주세요."

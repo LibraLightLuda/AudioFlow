@@ -111,14 +111,15 @@ internal suspend fun encodeAudioFile(input: File, output: OutputStream, progress
             if (!inputEnded) {
                 val slot = codec.dequeueInputBuffer(10_000)
                 if (slot >= 0) {
-                    if (extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED != 0)
-                        throw CatalogException("보호된 음원은 저장할 수 없어요.")
                     val data = checkNotNull(codec.getInputBuffer(slot)).apply { clear() }
                     val count = extractor.readSampleData(data,0)
                     if (count < 0) {
                         codec.queueInputBuffer(slot,0,0,0,MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                         inputEnded = true
                     } else {
+                        // At EOF sampleFlags may be -1; only inspect protection on an actual sample.
+                        if (extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED != 0)
+                            throw CatalogException("보호된 음원은 저장할 수 없어요.")
                         codec.queueInputBuffer(slot,0,count,extractor.sampleTime,0)
                         extractor.advance()
                     }

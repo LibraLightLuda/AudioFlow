@@ -1,4 +1,4 @@
-# AudioFlow 1.9.0
+# AudioFlow 1.10.0
 
 업데이트 자동 확인, 다섯 가지 색 테마, 항목별 설정 화면을 제공합니다. 음향 처리기가 Media3의 빈 입력 버퍼를 자기 자신에게 복사해 재생을 중단시키던 오류도 수정했습니다. 연결된 실제 휴대전화에서의 YouTube 재생·잠금 화면·블루투스 동작은 별도 검증이 필요합니다.
 
@@ -6,7 +6,7 @@ AudioFlow는 Google 계정 없이 공개 YouTube 콘텐츠의 오디오를 듣�
 
 ## 설치와 사용
 
-1. [GitHub 릴리스의 개인 설치용 APK](https://github.com/LibraLightLuda/AudioFlow/releases/download/v1.9.0/AudioFlow-1.9.0.apk)를 받아 휴대전화에서 엽니다. 기존 버전이 설치돼 있으면 업데이트합니다. USB 디버깅을 사용한다면 APK를 내려받은 폴더에서 `adb install -r AudioFlow-1.9.0.apk`를 실행하세요.
+1. [GitHub 릴리스의 개인 설치용 APK](https://github.com/LibraLightLuda/AudioFlow/releases/download/v1.10.0/AudioFlow-1.10.0.apk)를 받아 휴대전화에서 엽니다. 기존 버전이 설치돼 있으면 업데이트합니다. USB 디버깅을 사용한다면 APK를 내려받은 폴더에서 `adb install -r AudioFlow-1.10.0.apk`를 실행하세요.
 2. 홈의 **노래** 검색은 YouTube Music과 일반 동영상 검색 결과를 합쳐 관련 공식 뮤직비디오·음원을 먼저 표시합니다. **전체**와 **채널** 필터도 사용할 수 있습니다. YouTube에서 영상의 **공유 → AudioFlow**를 선택하면 해당 영상이 바로 재생됩니다.
 3. 채널을 열면 공개 동영상·뮤직비디오, 플레이리스트, Shorts 중 채널이 제공하는 목록을 볼 수 있습니다. 목록 끝의 **더 보기**로 다음 항목을 불러오고, 공개 플레이리스트를 열어 **내 플레이리스트로 저장**하면 로컬 복사본이 생깁니다.
 4. 검색 결과에서 골라 재생하거나 공유로 바로 재생한 곡은 라이브러리의 **기본 플레이리스트**에 자동 추가됩니다. 곡 옵션의 **YouTube에서 채널 열기**는 YouTube 앱을 우선 사용하고, 설치되지 않았다면 브라우저에서 엽니다.
@@ -19,6 +19,16 @@ AudioFlow는 Google 계정 없이 공개 YouTube 콘텐츠의 오디오를 듣�
 11. **다음 곡 미리 준비**와 **관련 곡 이어 재생**은 설정에서 각각 켭니다. 다음 곡 준비는 데이터 사용량이 제한되지 않은 연결에서 현재 버퍼가 충분할 때 동작합니다. 관련 곡은 같은 목록이나 채널에서 아직 듣지 않은 곡을 선택합니다.
 12. 재생이 실패하면 현재 곡과 위치를 유지한 채 재시도하거나 다음 곡을 재생하거나 YouTube에서 열 수 있습니다. **가사·자막**에서 현재 줄을 강조하고 시간 표시가 있는 줄을 눌러 이동할 수 있습니다.
 
+
+## MP3 음악 파일 저장
+
+곡의 더보기 또는 전체 플레이어 더보기 → **MP3 파일로 저장** → **저장 위치 선택**에서 기기의 Music/Downloads 등 원하는 폴더를 선택합니다. Android 13 이상에서 알림 권한은 진행·취소 알림을 위한 선택 사항이며, 거절해도 앱 안에서 저장할 수 있습니다. 다른 앱 사용·화면 잠금 중에도 포그라운드 작업으로 계속합니다. 곡 메뉴에서 **진행 상황 보기**를 선택하면 진행창을 다시 열 수 있습니다.
+
+- 기본 확장자는 **`.mp3`**, MIME은 `audio/mpeg`입니다. Android MediaExtractor/MediaCodec으로 디코딩한 PCM을 [Java LAME 3.98.4](https://github.com/nwaldispuehl/java-lame/releases/tag/v3.98.4)로 실제 변환합니다. 표준 CBR 192 kbps를 기준으로 하며 32 kHz 미만 입력은 128 kbps를 사용합니다. 손실 변환이므로 원본보다 음질이 좋아지지 않으며 EQ·배속·공간 효과는 저장 파일에 적용하지 않습니다.
+- Java LAME는 무료 오픈소스 **LGPL-3.0**입니다. [출처·해시·라이선스·전체 원본 소스](third_party/java-lame)와 앱 자산의 라이선스 고지를 포함했습니다. JNI/FFmpeg 실행 파일을 앱에 추가하지 않습니다. 코덱의 무료 라이선스가 음원의 저장·재배포 권리를 제공하지는 않습니다. [Fraunhofer의 핵심 MP3 특허 프로그램 종료 및 구현별 권리 설명](https://www.audioblog.iis.fraunhofer.com/mp3-software-patents-licenses)을 참고하세요(확인: 2026-11-16).
+- 공개 접근 가능한 **오디오 전용 스트림**, 길이를 확인할 수 있는 **3시간 이내** 콘텐츠, 모노·스테레오만 지원합니다. 라이브·로그인·DRM·접근 제한을 우회하지 않습니다. 스트림은 기존 쿠키 없는 HTTPS 클라이언트로만 받으며 서명 URL은 저장하지 않습니다.
+- 한 번에 한 곡, 원본 최대 512MiB·MP3 최대 256MiB·전체 작업 최대 30분입니다. 디스크 임시 파일과 작은 고정 버퍼로 처리하며 끝나거나 취소·실패하면 임시 파일을 정리합니다. 변환 중 추가 저장 공간과 CPU/배터리가 필요합니다. 네트워크 중단 시 자동 재개 없이 명확하게 종료하므로 다시 저장해야 합니다.
+- 프로세스 강제 종료 시 자동 재개하지 않으며 선택한 위치에 빈 파일이나 불완전한 파일이 남을 수 있습니다. 앱 내부 임시 파일 두 개는 다음 저장에서 재사용하므로 계속 늘어나지 않습니다. 저장 위치 선택기는 기기 저장소를 선택하세요. 클라우드 제공자를 직접 선택하면 해당 제공자의 저장 방식이 적용됩니다.
 
 ## 1.9.0 감상 도구
 
@@ -102,6 +112,7 @@ $env:AUDIOFLOW_LIVE = '1'
 
 | 라이브러리 | AudioFlow에서 사용하는 부분 | 공식 소스 |
 | --- | --- | --- |
+| Java LAME 3.98.4 (LGPL-3.0) | Android에서 디코딩한 PCM의 MP3 인코딩. 데스크톱 Java Sound 래퍼는 호출하지 않으며 배포 JAR·전체 원본 소스·라이선스를 포함합니다. | [nwaldispuehl/java-lame v3.98.4](https://github.com/nwaldispuehl/java-lame/releases/tag/v3.98.4), [출처·해시](third_party/java-lame) |
 | NewPipeExtractor v0.27.0 | 검색, 영상·채널·플레이리스트 조회, 공개 스트림과 자막 정보 추출. `com.github.TeamNewPipe:NewPipeExtractor:v0.27.0`을 [JitPack](https://jitpack.io)에서 받습니다. | [TeamNewPipe/NewPipeExtractor v0.27.0](https://github.com/TeamNewPipe/NewPipeExtractor/releases/tag/v0.27.0) |
 | AndroidX Media3 1.9.2 | ExoPlayer 재생, MediaSessionService, 미디어 캐시, OkHttp 데이터 소스. 직접 의존성은 `media3-exoplayer`, `media3-session`, `media3-datasource-okhttp`입니다. | [androidx/media 1.9.2](https://github.com/androidx/media/releases/tag/1.9.2) |
 | OkHttp 4.12.0 | 검색, 재생, 자막, 이미지의 HTTP 연결과 요청 검증. | [OkHttp 4.12.0 소스](https://github.com/lysine-dev/okhttp/tree/parent-4.12.0) |

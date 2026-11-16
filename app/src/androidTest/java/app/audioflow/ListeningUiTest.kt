@@ -55,6 +55,11 @@ class ListeningUiTest {
             ui.waitForIdle()
             val lyricsCapture=InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("screencap -p /data/local/tmp/AudioFlow-lyrics.png")
             ParcelFileDescriptor.AutoCloseInputStream(lyricsCapture).use { it.readBytes() }
+            ui.onNodeWithContentDescription("플레이어 더보기").performScrollTo().performClick()
+            ui.onNodeWithText("MP3 파일로 저장").performClick()
+            ui.onNodeWithText("MP3 음악 파일로 저장").assertExists()
+            ui.onNodeWithText("저장 위치 선택").assertIsEnabled()
+            ui.onNodeWithText("닫기").performClick()
         } finally {
             app.store.setLyrics(track.id,previousLyrics)
             app.store.setTrackGain(track.id,oldGain); app.store.blockTrack(track.id,wasBlocked)

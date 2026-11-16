@@ -133,6 +133,7 @@ internal fun AudioFlowScreen(
     var importing by remember { mutableStateOf(false) }
     var excludeTrack by remember { mutableStateOf<Track?>(null) }
     var cleanup by remember { mutableStateOf<Pair<Long?, List<Track>>?>(null) }
+    var exportTrack by remember { mutableStateOf<Track?>(null) }
 
     LaunchedEffect(installedNotes) {
         val release = installedNotes ?: return@LaunchedEffect
@@ -268,10 +269,12 @@ internal fun AudioFlowScreen(
         { playlistPicker = it },
         ::openYouTube,
         { excludeTrack = it },
+        { exportTrack = it },
     )
 
     val colors = remember(colorTheme, dark) { audioFlowColors(colorTheme, dark) }
     MaterialTheme(colorScheme = colors) {
+        MusicExportControls(exportTrack) { exportTrack = null }
         Scaffold(
             containerColor = MaterialTheme.colorScheme.surface,
             snackbarHost = { SnackbarHost(snackbar) },
@@ -474,6 +477,7 @@ private data class TrackActions(
     val playlist: (Track) -> Unit,
     val openChannel: (Track) -> Unit,
     val exclude: (Track) -> Unit,
+    val export: (Track) -> Unit,
 )
 
 @Composable
@@ -711,6 +715,7 @@ private fun TrackRow(
                     onClick = { menu = false; actions.favorite(track) })
                 DropdownMenuItem(text = { Text("플레이리스트에 추가") }, onClick = { menu = false; actions.playlist(track) })
                 DropdownMenuItem(text = { Text("YouTube에서 채널 열기") }, onClick = { menu = false; actions.openChannel(track) })
+                DropdownMenuItem(text = { Text("MP3 파일로 저장") }, onClick = { menu = false; actions.export(track) })
                 remove?.let {
                     DropdownMenuItem(text = { Text(removeLabel) }, onClick = { menu = false; it() })
                     DropdownMenuItem(text = { Text("모든 목록·기록에서 제외") },
@@ -925,6 +930,7 @@ private fun PlayerScreen(
                     DropdownMenu(more, { more = false }) {
                         DropdownMenuItem(text = { Text("음향 설정") }, onClick = { more = false; openSound() })
                         if (current != null) {
+                            DropdownMenuItem(text = { Text("MP3 파일로 저장") }, onClick = { more = false; actions.export(current) })
                             val app = context.applicationContext as AudioFlowApp
                             DropdownMenuItem(text = { Text("이 곡 추천 제외") }, onClick = { more = false
                                 app.saveLocal("추천 제외") { app.store.blockTrack(current.id, true) }

@@ -26,6 +26,7 @@ class ExportWifiTest {
             val required=checkNotNull(exportConstraints(true,true).requiredNetworkRequest)
             assertTrue(required.hasTransport(Caps.TRANSPORT_WIFI)); assertFalse(required.hasTransport(Caps.TRANSPORT_CELLULAR))
             assertFalse(required.hasCapability(Caps.NET_CAPABILITY_NOT_METERED))
+            assertTrue(required.hasCapability(Caps.NET_CAPABILITY_NOT_VPN))
             assertEquals(NetworkType.CONNECTED,exportConstraints(true,false).requiredNetworkType)
             assertEquals(NetworkType.NOT_REQUIRED,exportConstraints(false,true).requiredNetworkType)
         } finally { prefs.edit().apply { if(previous==null) remove("auto_wifi_only") else putBoolean("auto_wifi_only",previous) }.commit() }

@@ -10,6 +10,8 @@ import androidx.work.NetworkType
 
 internal fun usableExportWifi(capabilities: NetworkCapabilities?): Boolean = capabilities != null &&
     capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+    !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
+    !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
     capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
     capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
 

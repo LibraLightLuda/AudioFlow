@@ -737,8 +737,9 @@ private fun RemovableTrackRow(
     val state = rememberSwipeToDismissBoxState(positionalThreshold = { it * 0.45f })
     LaunchedEffect(state.settledValue) {
         if (state.settledValue == SwipeToDismissBoxValue.EndToStart) {
+            // Clear the saved dismiss state before removal so Undo cannot dismiss the restored row again.
+            state.snapTo(SwipeToDismissBoxValue.Settled)
             remove()
-            state.reset()
         }
     }
     SwipeToDismissBox(

@@ -1,4 +1,4 @@
-# AudioFlow 1.11.2
+# AudioFlow 1.11.3
 
 배속 버튼 양옆 화살표로 0.05배씩 바로 조절합니다. 곡 하나를 눌렀는데 목록 전체가 대기열에 들어가 연속 재생되던 문제를 수정했습니다. 연결된 실제 휴대전화에서의 YouTube 재생·잠금 화면·블루투스 동작은 별도 검증이 필요합니다.
 
@@ -6,7 +6,7 @@ AudioFlow는 Google 계정 없이 공개 YouTube 콘텐츠의 오디오를 듣�
 
 ## 설치와 사용
 
-1. [GitHub 릴리스의 개인 설치용 APK](https://github.com/LibraLightLuda/AudioFlow/releases/download/v1.11.2/AudioFlow-1.11.2.apk)를 받아 휴대전화에서 엽니다. 기존 버전이 설치돼 있으면 업데이트합니다. USB 디버깅을 사용한다면 APK를 내려받은 폴더에서 `adb install -r AudioFlow-1.11.2.apk`를 실행하세요.
+1. [GitHub 릴리스의 개인 설치용 APK](https://github.com/LibraLightLuda/AudioFlow/releases/download/v1.11.3/AudioFlow-1.11.3.apk)를 받아 휴대전화에서 엽니다. 기존 버전이 설치돼 있으면 업데이트합니다. USB 디버깅을 사용한다면 APK를 내려받은 폴더에서 `adb install -r AudioFlow-1.11.3.apk`를 실행하세요.
 2. 홈의 **노래** 검색은 YouTube Music과 일반 동영상 검색 결과를 합쳐 관련 공식 뮤직비디오·음원을 먼저 표시합니다. **전체**와 **채널** 필터도 사용할 수 있습니다. YouTube에서 영상의 **공유 → AudioFlow**를 선택하면 해당 영상이 바로 재생됩니다.
 3. 채널을 열면 공개 동영상·뮤직비디오, 플레이리스트, Shorts 중 채널이 제공하는 목록을 볼 수 있습니다. 목록 끝의 **더 보기**로 다음 항목을 불러오고, 공개 플레이리스트를 열어 **내 플레이리스트로 저장**하면 로컬 복사본이 생깁니다.
 4. 검색 결과에서 골라 재생하거나 공유로 바로 재생한 곡은 라이브러리의 **기본 플레이리스트**에 자동 추가됩니다. 곡 옵션의 **YouTube에서 채널 열기**는 YouTube 앱을 우선 사용하고, 설치되지 않았다면 브라우저에서 엽니다.

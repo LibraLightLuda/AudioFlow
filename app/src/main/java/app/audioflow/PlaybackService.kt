@@ -246,7 +246,7 @@ class PlaybackService : MediaSessionService() {
         }
         scope.launch { app.store.autoplay.collect {
             autoplayEnabled = it
-            if (!it) autoJob?.cancel()
+            if (!it) { autoJob?.cancel(); app.autoplayTrack.value=null }
         } }
         networkCallbackRegistered = runCatching {
             getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(networkCallback)
@@ -425,6 +425,8 @@ class PlaybackService : MediaSessionService() {
             startPositionMs: Long,
         ): com.google.common.util.concurrent.ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
             if (controller.uid == applicationInfo.uid && mediaItems.take(200).any { YoutubeLink.isVideoId(it.mediaId) }) {
+                autoJob?.cancel()
+                app.autoplayTrack.value=null
                 endRadio(restore = false)
             }
             return super.onSetMediaItems(mediaSession, controller, mediaItems, startIndex, startPositionMs)

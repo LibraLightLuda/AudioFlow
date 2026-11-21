@@ -45,6 +45,16 @@ class NativeAudioTest {
                             player.playerError?.let { throw AssertionError(playbackDiagnostic(it)) }; delay(50)
                         } }
                         assertNull(player.playerError)
+                        val candidates=listOf(Track("first","First"),Track("selected","Selected"))
+                        val (single,index)=checkNotNull(playbackSelection(candidates,1))
+                        player.setMediaItems(single.map { track -> MediaItem.Builder().setMediaId(track.id).setUri(file.toURI().toString()).build() },index,0)
+                        player.prepare(); player.play()
+                        withTimeout(15_000) { while(player.playbackState!=androidx.media3.common.Player.STATE_ENDED) {
+                            player.playerError?.let { throw AssertionError(playbackDiagnostic(it)) }; delay(50)
+                        } }
+                        delay(300)
+                        assertEquals(1,player.mediaItemCount); assertEquals("selected",player.currentMediaItem?.mediaId)
+                        assertFalse(player.hasNextMediaItem()); assertFalse(player.isPlaying)
                     } finally { player.release() }
                 }
             }

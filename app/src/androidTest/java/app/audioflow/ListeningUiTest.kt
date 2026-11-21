@@ -27,18 +27,26 @@ class ListeningUiTest {
         val oldGain=app.store.trackGain(track.id).first()
         val wasBlocked=track.id in app.store.blockedTracks.first()
         val previousLyrics=app.store.lyrics(track.id).first()
+        var previousSpeed=1f
         app.store.setLyrics(track.id,"[00:00]내 검증 가사")
         val future=withContext(Dispatchers.Main) { MediaController.Builder(ui.activity,
             SessionToken(ui.activity,ComponentName(ui.activity,PlaybackService::class.java))).buildAsync() }
         val controller=future.get(15, TimeUnit.SECONDS)
         try {
             withContext(Dispatchers.Main) {
+                previousSpeed=controller.playbackParameters.speed
+                controller.setPlaybackSpeed(1.33f)
                 controller.setMediaItems(listOf(track.mediaItem(),track.copy(id="dQw4w9WgXcQ",title="다음 연습곡").mediaItem()))
                 controller.pause()
                 withTimeout(5000) { while(controller.currentMediaItem?.mediaId != track.id) delay(50) }
             }
             ui.onNodeWithContentDescription("다음 곡").assertIsEnabled()
             ui.onNodeWithText("UI 연습곡").performClick()
+            ui.waitUntil(5000) { ui.onAllNodes(hasText("1.33×")).fetchSemanticsNodes().isNotEmpty() }
+            ui.onNodeWithContentDescription("배속 0.05배 늘리기").performScrollTo().performClick()
+            ui.waitUntil(5000) { ui.onAllNodes(hasText("1.38×")).fetchSemanticsNodes().isNotEmpty() }
+            ui.onNodeWithContentDescription("배속 0.05배 줄이기").performClick()
+            ui.waitUntil(5000) { ui.onAllNodes(hasText("1.33×")).fetchSemanticsNodes().isNotEmpty() }
             ui.onNodeWithText("구간 반복 · 북마크 · 곡 음량").performScrollTo().performClick()
             ui.onNodeWithContentDescription("곡별 음량").performScrollTo().performSemanticsAction(SemanticsActions.SetProgress) { it(-3f) }
             ui.waitUntil(5000) { runBlocking { app.store.trackGain(track.id).first() == -3 } }
@@ -63,7 +71,7 @@ class ListeningUiTest {
         } finally {
             app.store.setLyrics(track.id,previousLyrics)
             app.store.setTrackGain(track.id,oldGain); app.store.blockTrack(track.id,wasBlocked)
-            withContext(Dispatchers.Main) { controller.clearMediaItems(); MediaController.releaseFuture(future) }
+            withContext(Dispatchers.Main) { controller.setPlaybackSpeed(previousSpeed); controller.clearMediaItems(); MediaController.releaseFuture(future) }
         }
     }
 }

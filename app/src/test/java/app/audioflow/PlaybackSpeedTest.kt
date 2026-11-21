@@ -4,6 +4,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PlaybackSpeedTest {
+    @Test fun arrowStepsKeepFineSpeedAndClampAtBothEnds() {
+        assertEquals(1.38f,stepPlaybackSpeed(1.33f,true),0.00001f)
+        assertEquals(1.28f,stepPlaybackSpeed(1.33f,false),0.00001f)
+        assertEquals(0.25f,stepPlaybackSpeed(0.25f,false),0f)
+        assertEquals(4f,stepPlaybackSpeed(4f,true),0f)
+        assertEquals(1.05f,stepPlaybackSpeed(Float.NaN,true),0.00001f)
+    }
     @Test fun customInputAcceptsFineStepsAndRejectsUnsupportedValues() {
         mapOf("0.25" to 0.25f, ".75" to 0.75f, "1.33" to 1.33f, "1,45" to 1.45f, " 4.00 " to 4f).forEach { (text, speed) ->
             assertEquals(speed, parsePlaybackSpeed(text))

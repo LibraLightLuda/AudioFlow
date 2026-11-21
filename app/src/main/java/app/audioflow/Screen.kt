@@ -174,12 +174,9 @@ internal fun AudioFlowScreen(
     fun stopRadio() {
         controller?.sendCustomCommand(StopRadio, Bundle.EMPTY)
     }
-    fun play(tracks: List<Track>, index: Int, saveSelection: Boolean = false) {
+    fun play(tracks: List<Track>, index: Int, saveSelection: Boolean = false, all: Boolean = false) {
         val remote = controller ?: return toast("플레이어가 연결되는 중이에요.")
-        if (index !in tracks.indices) return
-        val start = index / 200 * 200
-        val bounded = tracks.drop(start).take(200)
-        val selected = index - start
+        val (bounded,selected)=playbackSelection(tracks,index,all) ?: return
         playRequest?.cancel()
         playRequest = scope.launch {
             val position = try {
@@ -317,9 +314,9 @@ internal fun AudioFlowScreen(
                     radio, ::startRadio, ::stopRadio, { soundOpen = true },
                 )
                 page == Page.Home -> HomeScreen(modifier, search, history.map { it.track },
-                    callbacks, ::play, ::removeHistory, ::importPlaylist, importing, connectionError, connect,
+                    callbacks, { tracks,index,save -> play(tracks,index,save) }, ::removeHistory, ::importPlaylist, importing, connectionError, connect,
                     playback, { controller?.togglePlay(); playerOpen = true }, radio, controller != null,
-                    ::startRadio, ::stopRadio)
+                    ::startRadio, ::stopRadio, { play(it,0,saveSelection=true,all=true) })
                 page == Page.Library -> {
                     val playlist = playlists.firstOrNull { it.id == playlistId }
                     val entries by remember(playlist?.id) { playlist?.let { dao.playlistTracks(it.id) }
@@ -331,6 +328,7 @@ internal fun AudioFlowScreen(
                             libraryModel.removeFromPlaylist(list.id, track.id)
                         } }, ::removeHistory, ::findDuplicates, callbacks, { tracks, index -> play(tracks, index) },
                         { ids -> playlist?.let { list -> update { dao.removeDuplicates(list.id, ids) } } },
+                        { play(it,0,all=true) },
                     )
                 }
                 else -> SettingsScreen(modifier, dark, { update { store.setDark(it) } }, colorTheme,
@@ -501,6 +499,7 @@ private fun HomeScreen(
     importPlaylist: (CatalogResult) -> Unit, importing: Boolean, connectionError: Boolean, connect: () -> Unit,
     playback: PlaybackUi, resume: () -> Unit, radio: RadioUi, radioReady: Boolean,
     startRadio: () -> Unit, stopRadio: () -> Unit,
+    playAll: (List<Track>) -> Unit,
 ) {
     val focus = LocalFocusManager.current
     val results = search.result
@@ -602,7 +601,7 @@ private fun HomeScreen(
                     }
                     if (tracks.isNotEmpty() && results != null) {
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            if (tracks.size > 1) TextButton(onClick = { play(tracks, 0, true) }) { Text("모두 재생") }
+                            if (tracks.size > 1) TextButton(onClick = { playAll(tracks) }) { Text("모두 재생") }
                             if (results.isPlaylist) TextButton(onClick = { importPlaylist(results) }, enabled = !importing) {
                                 Text("내 플레이리스트로 저장")
                             }
@@ -767,6 +766,7 @@ private fun LibraryScreen(
     open: (Long?) -> Unit, create: () -> Unit, delete: (LocalPlaylist) -> Unit, rename: (LocalPlaylist) -> Unit, remove: (Track) -> Unit,
     removeHistory: (Track) -> Unit, findDuplicates: (Long?, List<Track>) -> Unit,
     actions: TrackActions, play: (List<Track>, Int) -> Unit, removeSelected: (List<String>) -> Unit,
+    playAll: (List<Track>) -> Unit,
 ) {
     var query by rememberSaveable(active?.id) { mutableStateOf("") }
     var sort by rememberSaveable(active?.id) { mutableIntStateOf(0) }
@@ -800,6 +800,7 @@ private fun LibraryScreen(
                         IconButton(onClick={listMenu=true}) { Icon(Icons.Default.MoreVert,"음악 목록 더보기") }
                         DropdownMenu(listMenu,{listMenu=false}) {
                             val all=if(active!=null) entries else if(shelf==Shelf.Favorite) favorites else history
+                            DropdownMenuItem(text={Text("모두 재생")},enabled=all.isNotEmpty(),onClick={listMenu=false;playAll(all)})
                             DropdownMenuItem(text={Text("목록 모두 MP3로 저장")},enabled=all.isNotEmpty(),onClick={listMenu=false;actions.exportAll(all)})
                         }
                     }
@@ -815,7 +816,7 @@ private fun LibraryScreen(
                 TextButton(onClick = { open(null) }) { Text("목록으로 돌아가기") }
                 SectionTitle(active.name, entries.size)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    TextButton(enabled = tracks.isNotEmpty(), onClick = { play(tracks, 0) }) { Text("모두 재생") }
+                    TextButton(enabled = tracks.isNotEmpty(), onClick = { playAll(tracks) }) { Text("모두 재생") }
                     TextButton(enabled = entries.size > 1, onClick = { findDuplicates(active.id, entries) }) { Text("중복 정리") }
                     if (active.id != DEFAULT_PLAYLIST_ID) {
                         TextButton(onClick = { rename(active) }) { Text("이름 변경") }
@@ -1165,8 +1166,7 @@ private fun PlaybackOptions(controller: MediaController?, state: PlaybackUi, dea
             else -> "반복 끔"
         }) }, enabled = controller != null && !radioActive)
         Box {
-            AssistChip(onClick = { speeds = true }, label = { Text("${playbackSpeedLabel(state.speed)}×") },
-                enabled = controller != null)
+            PlaybackSpeedControl(state.speed,controller!=null,{speeds=true}) { controller?.setPlaybackSpeed(it) }
             if (speeds) PlaybackSpeedDialog(state.speed, { speeds = false }) { controller?.setPlaybackSpeed(it) }
         }
         Box {

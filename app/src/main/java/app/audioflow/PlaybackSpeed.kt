@@ -4,6 +4,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.Alignment
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -36,6 +41,22 @@ internal fun parsePlaybackSpeed(text: String): Float? {
 internal fun playbackSpeedLabel(speed: Float): String =
     String.format(Locale.ROOT, "%.2f", normalizedPlaybackSpeed(speed)).trimEnd('0').trimEnd('.')
 
+internal fun stepPlaybackSpeed(current: Float, increase: Boolean): Float =
+    normalizedPlaybackSpeed(((normalizedPlaybackSpeed(current)*100).roundToInt() + if(increase) 5 else -5)/100f)
+
+@Composable
+internal fun PlaybackSpeedControl(current: Float, enabled: Boolean, open: () -> Unit, apply: (Float) -> Unit) {
+    Row(verticalAlignment=Alignment.CenterVertically) {
+        IconButton(enabled=enabled && current>MIN_PLAYBACK_SPEED,onClick={apply(stepPlaybackSpeed(current,false))}) {
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft,"배속 0.05배 줄이기")
+        }
+        AssistChip(onClick=open,label={Text("${playbackSpeedLabel(current)}×")},enabled=enabled)
+        IconButton(enabled=enabled && current<MAX_PLAYBACK_SPEED,onClick={apply(stepPlaybackSpeed(current,true))}) {
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight,"배속 0.05배 늘리기")
+        }
+    }
+}
+
 @Composable
 internal fun PlaybackSpeedDialog(current: Float, dismiss: () -> Unit, apply: (Float) -> Unit) {
     var text by rememberSaveable { mutableStateOf(playbackSpeedLabel(current)) }
@@ -52,10 +73,10 @@ internal fun PlaybackSpeedDialog(current: Float, dismiss: () -> Unit, apply: (Fl
                     modifier = Modifier.semantics { contentDescription = "재생 속도 슬라이더" })
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(enabled = selected > MIN_PLAYBACK_SPEED, onClick = {
-                        text = playbackSpeedLabel(normalizedPlaybackSpeed(((selected * 100).roundToInt() - 5) / 100f))
+                        text = playbackSpeedLabel(stepPlaybackSpeed(selected,false))
                     }) { Text("−0.05배") }
                     TextButton(enabled = selected < MAX_PLAYBACK_SPEED, onClick = {
-                        text = playbackSpeedLabel(normalizedPlaybackSpeed(((selected * 100).roundToInt() + 5) / 100f))
+                        text = playbackSpeedLabel(stepPlaybackSpeed(selected,true))
                     }) { Text("+0.05배") }
                 }
                 OutlinedTextField(text, { text = it.take(7) }, label = { Text("배속 직접 입력") },

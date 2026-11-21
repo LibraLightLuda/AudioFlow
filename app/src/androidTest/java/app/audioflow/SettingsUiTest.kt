@@ -34,7 +34,7 @@ class SettingsUiTest {
                     ui.waitUntil(30_000) {
                         ui.onAllNodes(hasText("마지막 확인 ", substring = true)).fetchSemanticsNodes().isNotEmpty()
                     }
-                } catch(error: Exception) { screenshot("updates-error"); println(ui.onRoot(useUnmergedTree=true).printToString()); throw error }
+                } catch(error: Throwable) { screenshot("updates-error"); println(ui.onRoot(useUnmergedTree=true).printToString()); throw error }
                 val recent=runBlocking(kotlinx.coroutines.Dispatchers.IO) { ReleaseUpdate.latest(allowRecent=true) }
                 org.junit.Assert.assertSame(recent,runBlocking(kotlinx.coroutines.Dispatchers.IO) { ReleaseUpdate.latest(allowRecent=true) })
                 ui.onNodeWithText("이번 버전의 개선사항").assertExists()

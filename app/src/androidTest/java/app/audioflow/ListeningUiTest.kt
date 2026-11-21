@@ -48,11 +48,12 @@ class ListeningUiTest {
             ui.onNodeWithContentDescription("배속 0.05배 줄이기").performClick()
             ui.waitUntil(5000) { ui.onAllNodes(hasText("1.33×")).fetchSemanticsNodes().isNotEmpty() }
             ui.onNodeWithText("구간 반복 · 북마크 · 곡 음량").performScrollTo().performClick()
-            ui.onNodeWithContentDescription("곡별 음량").performScrollTo().performSemanticsAction(SemanticsActions.SetProgress) { it(-3f) }
-            ui.waitUntil(5000) { runBlocking { app.store.trackGain(track.id).first() == -3 } }
             ui.waitForIdle()
             val descriptor=InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("screencap -p /data/local/tmp/AudioFlow-practice.png")
             ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { it.readBytes() }
+            ui.waitUntil(5000) { ui.onAllNodes(hasContentDescription("곡별 음량")).fetchSemanticsNodes().isNotEmpty() }
+            ui.onNodeWithContentDescription("곡별 음량").performScrollTo().performSemanticsAction(SemanticsActions.SetProgress) { it(-3f) }
+            ui.waitUntil(5000) { runBlocking { app.store.trackGain(track.id).first() == -3 } }
             InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
             ui.onNodeWithContentDescription("플레이어 더보기").performScrollTo().performClick()
             ui.onNodeWithText("이 곡 추천 제외").performClick()

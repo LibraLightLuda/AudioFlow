@@ -35,6 +35,8 @@ class ListeningUiTest {
         try {
             withContext(Dispatchers.Main) {
                 previousSpeed=controller.playbackParameters.speed
+                controller.pause()
+                controller.stop()
                 controller.setPlaybackSpeed(1.33f)
                 controller.setMediaItems(listOf(track.mediaItem(),track.copy(id="dQw4w9WgXcQ",title="다음 연습곡").mediaItem()))
                 controller.pause()

@@ -178,7 +178,7 @@ internal fun AudioFlowScreen(
         val remote = controller ?: return toast("플레이어가 연결되는 중이에요.")
         val (bounded,selected)=playbackSelection(tracks,index,all) ?: return
         playRequest?.cancel()
-        playRequest = scope.launch {
+        playRequest = scope.launch(kotlinx.coroutines.Dispatchers.Main.immediate) {
             val position = try {
                 dao.track(bounded[selected].id)?.positionMs ?: 0
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
